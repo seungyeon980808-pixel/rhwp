@@ -21,6 +21,25 @@ export interface LoadResult {
   pageCount: number;
 }
 
+export interface SelectionSnapshotV1 {
+  readonly schemaVersion: 1;
+  readonly snapshotId: string;
+  readonly revision: number;
+  readonly text: string;
+  readonly scope: 'body' | 'cell';
+}
+
+export type ReplaceSelectionResultV1 =
+  | {
+      readonly ok: true;
+      readonly snapshotId: string;
+      readonly revision: number;
+    }
+  | {
+      readonly ok: false;
+      readonly reason: 'snapshot-not-found' | 'stale-document' | 'selection-changed' | 'unsupported-selection';
+    };
+
 export interface HwpVerifyResult {
   /** 직렬화된 HWP 바이트 수 */
   bytesLen: number;
@@ -178,6 +197,10 @@ export declare class RhwpEditor {
    * 스튜디오가 notify-saved-v1 capability를 광고하지 않으면 요청 없이 실패합니다.
    */
   notifySaved(fileName?: string): Promise<{ ok: true; wasDirty: boolean }>;
+  /** 현재 텍스트 선택을 변경 충돌 검사용 snapshot으로 반환합니다 */
+  getSelectionSnapshot(): Promise<SelectionSnapshotV1 | null>;
+  /** snapshot이 여전히 유효할 때만 선택 텍스트를 교체합니다 */
+  replaceSelection(snapshotId: string, text: string): Promise<ReplaceSelectionResultV1>;
   /** iframe 엘리먼트를 반환합니다 */
   readonly element: HTMLIFrameElement;
   /** 에디터를 제거합니다 */

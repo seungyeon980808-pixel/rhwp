@@ -59,10 +59,13 @@ import {
 import { calculateFitPageZoom, calculateFitWidthZoom } from '@/view/zoom-fit';
 import { installEmbedRuntime } from '@/embed/runtime';
 import type { EmbedRendererRuntimeRequestV1 } from '@/embed/rpc-router';
+import { SelectionBridge } from '@/embed/selection-bridge';
 
 const wasm = new WasmBridge();
 const eventBus = new EventBus();
 const documentState = new DocumentDirtyState(eventBus);
+const selectionBridge = new SelectionBridge();
+eventBus.on('document-mutated', () => selectionBridge.noteDocumentMutation());
 documentState.installBeforeUnload(window);
 const autosaveManager = new AutosaveManager({
   exportBytes: () => wasm.exportHwp(),
@@ -1503,6 +1506,15 @@ installEmbedRuntime({
     async notifySaved(fileName) {
       await initPromise;
       return completeHostSave(fileName);
+    },
+    async getSelectionSnapshot() {
+      await initPromise;
+      return inputHandler ? selectionBridge.capture(inputHandler) : null;
+    },
+    async replaceSelection(snapshotId, text) {
+      await initPromise;
+      if (!inputHandler) return { ok: false, reason: 'snapshot-not-found' };
+      return selectionBridge.replace(inputHandler, snapshotId, text);
     },
   },
 });

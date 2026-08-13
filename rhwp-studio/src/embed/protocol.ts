@@ -4,6 +4,7 @@ export const EMBED_CAPABILITIES = [
   'hml-export',
   'renderer-diagnostics-v1',
   'notify-saved-v1',
+  'selection-edit-v1',
 ] as const;
 
 export interface EmbedConnectAttempt {

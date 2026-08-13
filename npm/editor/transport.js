@@ -4,6 +4,7 @@ const CAPABILITIES = [
   'hml-export',
   'renderer-diagnostics-v1',
   'notify-saved-v1',
+  'selection-edit-v1',
 ];
 const LONG_RUNNING_METHODS = new Set([
   'loadFile', 'exportHwp', 'exportHwpVerify', 'exportHwpx', 'exportHml',

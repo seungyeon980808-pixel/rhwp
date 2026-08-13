@@ -237,6 +237,36 @@ export class RhwpEditor {
   }
 
   /**
+   * 현재 텍스트 선택을 변경 충돌 검사용 snapshot으로 반환합니다.
+   * 선택이 없거나 지원 범위 밖이면 null을 반환합니다.
+   */
+  async getSelectionSnapshot() {
+    if (!this._transport.supports('selection-edit-v1')) {
+      throw new Error('Selection edit v1 is not supported by this Studio');
+    }
+    return this._request('getSelectionSnapshot');
+  }
+
+  /**
+   * 선택 snapshot이 여전히 유효할 때만 텍스트를 교체합니다.
+   *
+   * @param snapshotId - getSelectionSnapshot()이 반환한 snapshot id
+   * @param text - 교체할 텍스트
+   */
+  async replaceSelection(snapshotId, text) {
+    if (!this._transport.supports('selection-edit-v1')) {
+      throw new Error('Selection edit v1 is not supported by this Studio');
+    }
+    if (typeof snapshotId !== 'string' || snapshotId.length === 0) {
+      throw new TypeError('snapshotId must be a non-empty string');
+    }
+    if (typeof text !== 'string') {
+      throw new TypeError('text must be a string');
+    }
+    return this._request('replaceSelection', { snapshotId, text });
+  }
+
+  /**
    * iframe 엘리먼트를 반환합니다.
    */
   get element() {

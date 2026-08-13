@@ -12,6 +12,25 @@ export interface EmbedNotifySavedResult {
   wasDirty: boolean;
 }
 
+export interface EmbedSelectionSnapshotV1 {
+  readonly schemaVersion: 1;
+  readonly snapshotId: string;
+  readonly revision: number;
+  readonly text: string;
+  readonly scope: 'body' | 'cell';
+}
+
+export type EmbedReplaceSelectionResultV1 =
+  | {
+      readonly ok: true;
+      readonly snapshotId: string;
+      readonly revision: number;
+    }
+  | {
+      readonly ok: false;
+      readonly reason: 'snapshot-not-found' | 'stale-document' | 'selection-changed' | 'unsupported-selection';
+    };
+
 export interface EmbedRpcHandlers {
   ready(): Promise<boolean>;
   loadFile(
@@ -29,6 +48,11 @@ export interface EmbedRpcHandlers {
   getHmlSaveState(): Promise<HmlSaveState>;
   exportHwpVerify(): Promise<unknown>;
   notifySaved(fileName?: string): Promise<EmbedNotifySavedResult>;
+  getSelectionSnapshot?(): Promise<EmbedSelectionSnapshotV1 | null>;
+  replaceSelection?(
+    snapshotId: string,
+    text: string,
+  ): Promise<EmbedReplaceSelectionResultV1>;
 }
 
 export interface EmbedRendererDiagnosticsV1 {
@@ -97,6 +121,26 @@ export async function routeEmbedRequest(
         ? params.fileName
         : undefined,
     );
+    case 'getSelectionSnapshot': {
+      if (!handlers.getSelectionSnapshot) {
+        throw new Error('Selection edit v1 is not supported');
+      }
+      return handlers.getSelectionSnapshot();
+    }
+    case 'replaceSelection': {
+      if (!handlers.replaceSelection) {
+        throw new Error('Selection edit v1 is not supported');
+      }
+      const snapshotId = params.snapshotId;
+      if (typeof snapshotId !== 'string' || snapshotId.length === 0) {
+        throw new Error('snapshotId must be a non-empty string');
+      }
+      const text = params.text;
+      if (typeof text !== 'string') {
+        throw new Error('text must be a string');
+      }
+      return handlers.replaceSelection(snapshotId, text);
+    }
     default: throw new Error(`Unknown method: ${method}`);
   }
 }

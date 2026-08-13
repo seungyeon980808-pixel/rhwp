@@ -44,6 +44,8 @@ import type { NavigationKeyInput } from './navigation-keymap';
 import { isPointNearBoxBorder } from './table-border-hit';
 import { DeferredPaginationRunner } from './deferred-pagination-runner';
 import { tableObjectClipboardTarget } from './table-object-clipboard-target';
+import type { HostSelection } from '@/embed/selection-bridge';
+import { readHostSelection, replaceHostSelection } from '@/embed/host-selection-adapter';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const DRAG_SCROLL_EDGE_PX = 48;
@@ -5041,6 +5043,33 @@ export class InputHandler {
   /** 현재 선택 범위를 반환한다 (커맨드 시스템용) */
   getSelection(): { start: DocumentPosition; end: DocumentPosition } | null {
     return this.cursor.getSelectionOrdered();
+  }
+
+  /** 임베드 호스트가 AI 문맥으로 사용할 현재 선택 텍스트와 위치 서명을 반환한다. */
+  readSelectionForHost(): HostSelection | null {
+    const selection = this.getNonEmptySelection();
+    if (!selection) return null;
+    return readHostSelection(this.wasm, selection.start, selection.end);
+  }
+
+  /** 지원되는 현재 선택을 하나의 snapshot undo 단위로 교체한다. */
+  replaceSelectionFromHost(text: string): boolean {
+    const selection = this.getNonEmptySelection();
+    if (!selection || /[\r\n\t]/.test(text)) return false;
+    if (!readHostSelection(this.wasm, selection.start, selection.end)) return false;
+
+    let replaced = false;
+    this.cursor.clearSelection();
+    this.executeOperation({
+      kind: 'snapshot',
+      operationType: 'replaceSelectionFromHost',
+      operation: (wasm) => {
+        const nextPosition = replaceHostSelection(wasm, selection.start, selection.end, text);
+        replaced = nextPosition !== null;
+        return nextPosition;
+      },
+    });
+    return replaced;
   }
 
   /** 지정된 선택 범위에 글자 서식을 적용한다 (커맨드 시스템용) */
