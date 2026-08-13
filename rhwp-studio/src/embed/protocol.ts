@@ -5,6 +5,7 @@ export const EMBED_CAPABILITIES = [
   'renderer-diagnostics-v1',
   'notify-saved-v1',
   'selection-edit-v1',
+  'field-fill-v1',
 ] as const;
 
 export interface EmbedConnectAttempt {

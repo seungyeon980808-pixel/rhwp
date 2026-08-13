@@ -266,6 +266,23 @@ export class RhwpEditor {
     return this._request('replaceSelection', { snapshotId, text });
   }
 
+  /** 현재 문서의 입력 가능한 누름틀 목록을 반환합니다. */
+  async getFields() {
+    if (!this._transport.supports('field-fill-v1')) {
+      throw new Error('Field fill v1 is not supported by this Studio');
+    }
+    return this._request('getFields');
+  }
+
+  /** 필드 값 여러 개를 하나의 실행 취소 단위로 적용합니다. */
+  async fillFields(entries) {
+    if (!this._transport.supports('field-fill-v1')) {
+      throw new Error('Field fill v1 is not supported by this Studio');
+    }
+    if (!Array.isArray(entries)) throw new TypeError('entries must be an array');
+    return this._request('fillFields', { entries });
+  }
+
   /**
    * iframe 엘리먼트를 반환합니다.
    */

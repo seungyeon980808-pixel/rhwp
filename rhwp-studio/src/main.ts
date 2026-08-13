@@ -1516,5 +1516,21 @@ installEmbedRuntime({
       if (!inputHandler) return { ok: false, reason: 'snapshot-not-found' };
       return selectionBridge.replace(inputHandler, snapshotId, text);
     },
+    async getFields() {
+      await initPromise;
+      return wasm.getFieldList().map((field) => ({
+        schemaVersion: 1 as const,
+        fieldId: field.fieldId,
+        name: field.name || field.guide || `필드 ${field.fieldId}`,
+        guide: field.guide,
+        value: field.value,
+        editable: field.editableInForm !== false,
+      }));
+    },
+    async fillFields(entries) {
+      await initPromise;
+      if (!inputHandler) return { ok: false, reason: 'unsupported-field' };
+      return inputHandler.fillFieldsFromHost(entries);
+    },
   },
 });

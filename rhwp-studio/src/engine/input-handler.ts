@@ -5072,6 +5072,32 @@ export class InputHandler {
     return replaced;
   }
 
+  /** 임베드 호스트가 검증한 필드 값들을 하나의 snapshot undo 단위로 적용한다. */
+  fillFieldsFromHost(entries: ReadonlyArray<{ fieldId: number; value: string }>):
+    { ok: true; updated: number } | { ok: false; reason: 'unknown-field' | 'unsupported-field' } {
+    const fields = new Map(this.wasm.getFieldList().map((field) => [field.fieldId, field]));
+    if (entries.some((entry) => !fields.has(entry.fieldId))) {
+      return { ok: false, reason: 'unknown-field' };
+    }
+    if (entries.some((entry) => fields.get(entry.fieldId)?.editableInForm === false)) {
+      return { ok: false, reason: 'unsupported-field' };
+    }
+
+    let updated = 0;
+    this.executeOperation({
+      kind: 'snapshot',
+      operationType: 'fillFieldsFromHost',
+      operation: (wasm) => {
+        for (const entry of entries) {
+          const result = wasm.setFieldValue(entry.fieldId, entry.value);
+          if (result.ok && result.oldValue !== result.newValue) updated += 1;
+        }
+        return updated > 0 ? this.cursor.getPosition() : null;
+      },
+    });
+    return { ok: true, updated };
+  }
+
   /** 지정된 선택 범위에 글자 서식을 적용한다 (커맨드 시스템용) */
   applyCharPropsToRange(
     start: DocumentPosition,

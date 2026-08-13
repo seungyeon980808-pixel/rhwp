@@ -40,6 +40,24 @@ export type ReplaceSelectionResultV1 =
       readonly reason: 'snapshot-not-found' | 'stale-document' | 'selection-changed' | 'unsupported-selection';
     };
 
+export interface EmbedFieldV1 {
+  readonly schemaVersion: 1;
+  readonly fieldId: number;
+  readonly name: string;
+  readonly guide: string;
+  readonly value: string;
+  readonly editable: boolean;
+}
+
+export interface EmbedFieldValueV1 {
+  readonly fieldId: number;
+  readonly value: string;
+}
+
+export type EmbedFillFieldsResultV1 =
+  | { readonly ok: true; readonly updated: number }
+  | { readonly ok: false; readonly reason: 'unknown-field' | 'unsupported-field' };
+
 export interface HwpVerifyResult {
   /** 직렬화된 HWP 바이트 수 */
   bytesLen: number;
@@ -201,6 +219,10 @@ export declare class RhwpEditor {
   getSelectionSnapshot(): Promise<SelectionSnapshotV1 | null>;
   /** snapshot이 여전히 유효할 때만 선택 텍스트를 교체합니다 */
   replaceSelection(snapshotId: string, text: string): Promise<ReplaceSelectionResultV1>;
+  /** 현재 문서의 입력 가능한 누름틀 목록을 반환합니다 */
+  getFields(): Promise<EmbedFieldV1[]>;
+  /** 필드 값 여러 개를 하나의 실행 취소 단위로 적용합니다 */
+  fillFields(entries: EmbedFieldValueV1[]): Promise<EmbedFillFieldsResultV1>;
   /** iframe 엘리먼트를 반환합니다 */
   readonly element: HTMLIFrameElement;
   /** 에디터를 제거합니다 */

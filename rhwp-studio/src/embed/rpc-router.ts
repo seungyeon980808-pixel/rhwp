@@ -31,6 +31,24 @@ export type EmbedReplaceSelectionResultV1 =
       readonly reason: 'snapshot-not-found' | 'stale-document' | 'selection-changed' | 'unsupported-selection';
     };
 
+export interface EmbedFieldV1 {
+  readonly schemaVersion: 1;
+  readonly fieldId: number;
+  readonly name: string;
+  readonly guide: string;
+  readonly value: string;
+  readonly editable: boolean;
+}
+
+export interface EmbedFieldValueV1 {
+  readonly fieldId: number;
+  readonly value: string;
+}
+
+export type EmbedFillFieldsResultV1 =
+  | { readonly ok: true; readonly updated: number }
+  | { readonly ok: false; readonly reason: 'unknown-field' | 'unsupported-field' };
+
 export interface EmbedRpcHandlers {
   ready(): Promise<boolean>;
   loadFile(
@@ -53,6 +71,8 @@ export interface EmbedRpcHandlers {
     snapshotId: string,
     text: string,
   ): Promise<EmbedReplaceSelectionResultV1>;
+  getFields?(): Promise<EmbedFieldV1[]>;
+  fillFields?(entries: EmbedFieldValueV1[]): Promise<EmbedFillFieldsResultV1>;
 }
 
 export interface EmbedRendererDiagnosticsV1 {
@@ -140,6 +160,27 @@ export async function routeEmbedRequest(
         throw new Error('text must be a string');
       }
       return handlers.replaceSelection(snapshotId, text);
+    }
+    case 'getFields': {
+      if (!handlers.getFields) throw new Error('Field fill v1 is not supported');
+      return handlers.getFields();
+    }
+    case 'fillFields': {
+      if (!handlers.fillFields) throw new Error('Field fill v1 is not supported');
+      if (!Array.isArray(params.entries) || params.entries.length > 100) {
+        throw new Error('entries must be an array with at most 100 items');
+      }
+      const entries = params.entries.map((entry) => {
+        const value = asParams(entry);
+        if (!Number.isSafeInteger(value.fieldId) || (value.fieldId as number) < 0) {
+          throw new Error('fieldId must be a non-negative safe integer');
+        }
+        if (typeof value.value !== 'string' || value.value.length > 20_000) {
+          throw new Error('value must be a string with at most 20000 characters');
+        }
+        return { fieldId: value.fieldId as number, value: value.value };
+      });
+      return handlers.fillFields(entries);
     }
     default: throw new Error(`Unknown method: ${method}`);
   }
