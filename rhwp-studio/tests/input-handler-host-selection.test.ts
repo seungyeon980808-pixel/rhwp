@@ -130,3 +130,78 @@ test('InputHandler는 단일 표 셀 선택을 경로 기반 snapshot 연산으�
   assert.deepEqual(cursor, { ...CELL_START, charOffset: 6 });
   assert.deepEqual(mutations, ['delete-cell', 'insert-cell:새 셀문']);
 });
+
+test('InputHandler는 여러 본문 문단에 걸친 호스트 선택을 복사 전에 차단한다', () => {
+  let copied = false;
+  const wasm = {
+    copySelection() {
+      copied = true;
+    },
+    getClipboardText: () => '복합 선택',
+  };
+
+  const selection = readHostSelection(wasm, START, { ...END, paragraphIndex: 3 });
+
+  assert.equal(selection, null);
+  assert.equal(copied, false);
+});
+
+test('InputHandler는 한 셀 안에서도 여러 셀 문단에 걸친 선택을 차단한다', () => {
+  let copied = false;
+  const wasm = {
+    copySelectionInCellByPath() {
+      copied = true;
+    },
+    getClipboardText: () => '여러 셀 문단',
+  };
+  const end = {
+    ...CELL_END,
+    paragraphIndex: 1,
+    cellParaIndex: 1,
+    cellPath: [{ controlIndex: 1, cellIndex: 3, cellParaIndex: 1 }],
+  } satisfies DocumentPosition;
+
+  const selection = readHostSelection(wasm, CELL_START, end);
+
+  assert.equal(selection, null);
+  assert.equal(copied, false);
+});
+
+test('InputHandler는 그림·도형 대체 문자가 포함된 선택을 차단한다', () => {
+  const wasm = {
+    copySelection() {},
+    getClipboardText: () => `앞${String.fromCodePoint(0xfffc)}뒤`,
+  };
+
+  assert.equal(readHostSelection(wasm, START, END), null);
+});
+
+test('InputHandler는 탭·줄바꿈·DEL이 포함된 원문 선택을 차단한다', () => {
+  for (const text of ['앞\t뒤', '앞\n뒤', `앞${String.fromCodePoint(0x7f)}뒤`]) {
+    const wasm = {
+      copySelection() {},
+      getClipboardText: () => text,
+    };
+
+    assert.equal(readHostSelection(wasm, START, END), null);
+  }
+});
+
+test('InputHandler는 개체 대체 문자나 제어 문자를 치환문으로 삽입하지 않는다', () => {
+  const mutations: string[] = [];
+  const wasm = {
+    deleteRange: () => {
+      mutations.push('delete');
+      return { ok: true, paraIdx: 2, charOffset: 1 };
+    },
+    replaceBodyTextLocal: () => {
+      mutations.push('insert');
+      return { documentPaginationPending: false, flowChanged: false };
+    },
+  };
+
+  assert.equal(replaceHostSelection(wasm, START, END, `앞${String.fromCodePoint(0xfffc)}뒤`), null);
+  assert.equal(replaceHostSelection(wasm, START, END, `앞${String.fromCodePoint(0x7f)}뒤`), null);
+  assert.equal(replaceHostSelection(wasm, START, END, '앞\n뒤'), null);
+  assert.deepEqual(mutations, []);
+});

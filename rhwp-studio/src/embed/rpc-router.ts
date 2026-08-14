@@ -1,4 +1,5 @@
 import type { HmlSaveState } from '../core/hml-save-capability.ts';
+import type { DocumentProtectionProfileV1 } from './document-protection-profile.ts';
 import type {
   CanvasKitRenderModeRequest,
   CanvasKitSurfaceRequest,
@@ -56,11 +57,12 @@ export interface EmbedRpcHandlers {
     fileName: string,
     skipUnsavedGuard: boolean,
     suppressDialogs: boolean,
-  ): Promise<{ pageCount: number }>;
+  ): Promise<{ pageCount: number; protection?: DocumentProtectionProfileV1 }>;
   pageCount(): Promise<number>;
   getRendererDiagnostics(page: number): Promise<EmbedRendererDiagnosticsV1>;
   getPageSvg(page: number): Promise<string>;
   exportHwp(): Promise<Uint8Array>;
+  exportHwpVerified?(): Promise<Uint8Array>;
   exportHwpx(): Promise<Uint8Array>;
   exportHml(): Promise<Uint8Array>;
   getHmlSaveState(): Promise<HmlSaveState>;
@@ -132,6 +134,12 @@ export async function routeEmbedRequest(
       typeof params.page === 'number' ? params.page : 0,
     );
     case 'exportHwp': return handlers.exportHwp();
+    case 'exportHwpVerified': {
+      if (!handlers.exportHwpVerified) {
+        throw new Error('Verified HWP export is not supported');
+      }
+      return handlers.exportHwpVerified();
+    }
     case 'exportHwpx': return handlers.exportHwpx();
     case 'exportHml': return handlers.exportHml();
     case 'getHmlSaveState': return handlers.getHmlSaveState();

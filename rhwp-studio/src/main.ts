@@ -60,6 +60,7 @@ import { calculateFitPageZoom, calculateFitWidthZoom } from '@/view/zoom-fit';
 import { installEmbedRuntime } from '@/embed/runtime';
 import type { EmbedRendererRuntimeRequestV1 } from '@/embed/rpc-router';
 import { SelectionBridge } from '@/embed/selection-bridge';
+import { buildDocumentProtectionProfile } from '@/embed/document-protection-profile';
 
 const wasm = new WasmBridge();
 const eventBus = new EventBus();
@@ -1456,7 +1457,14 @@ installEmbedRuntime({
         throw new Error('문서 열기가 취소되었습니다.');
       }
       await loadBytes(data, fileName, null, undefined, { suppressDialogs });
-      return { pageCount: wasm.pageCount };
+      const pageTrees = Array.from(
+        { length: wasm.pageCount },
+        (_, pageIndex) => wasm.getPageLayerTreeObject(pageIndex),
+      );
+      return {
+        pageCount: wasm.pageCount,
+        protection: buildDocumentProtectionProfile(pageTrees),
+      };
     },
     async pageCount() {
       await initPromise;
@@ -1486,6 +1494,10 @@ installEmbedRuntime({
     async exportHwp() {
       await initPromise;
       return wasm.exportHwp();
+    },
+    async exportHwpVerified() {
+      await initPromise;
+      return wasm.exportHwpVerified();
     },
     async exportHwpx() {
       await initPromise;

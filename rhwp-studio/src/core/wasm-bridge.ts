@@ -641,6 +641,17 @@ export class WasmBridge {
     return this.doc.exportHwpVerify();
   }
 
+  exportHwpVerified(): Uint8Array {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    this.onBeforeExport?.();
+    const exportFn = (this.doc as unknown as { exportHwpVerified?: () => Uint8Array })
+      .exportHwpVerified;
+    if (typeof exportFn !== 'function') {
+      throw new Error('현재 WASM 빌드는 검증된 HWP 저장을 지원하지 않습니다');
+    }
+    return exportFn.call(this.doc);
+  }
+
   getSourceFormat(): string {
     return this.doc?.getSourceFormat?.() ?? 'hwp';
   }

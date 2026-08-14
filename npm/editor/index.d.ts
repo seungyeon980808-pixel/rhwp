@@ -19,6 +19,29 @@ export interface EditorOptions {
 
 export interface LoadResult {
   pageCount: number;
+  protection?: DocumentProtectionProfileV1;
+}
+
+export type DocumentProtectionReason =
+  | 'many-pages'
+  | 'many-tables'
+  | 'many-images'
+  | 'nested-tables'
+  | 'mixed-drawing-objects';
+
+export interface DocumentProtectionProfileV1 {
+  readonly schemaVersion: 1;
+  readonly status: 'standard' | 'protected';
+  readonly pageCount: number;
+  readonly renderedTableCount: number;
+  readonly imageCount: number;
+  readonly shapeCount: number;
+  readonly nestedTableCount: number;
+  readonly reasons: readonly DocumentProtectionReason[];
+  readonly safeEditScopes: readonly [
+    'single-body-paragraph',
+    'single-table-cell-paragraph',
+  ];
 }
 
 export interface SelectionSnapshotV1 {
@@ -200,6 +223,8 @@ export declare class RhwpEditor {
   getRendererDiagnostics(page?: number): Promise<RendererDiagnosticsV1>;
   /** 현재 문서를 HWP 바이너리로 내보냅니다 */
   exportHwp(): Promise<Uint8Array>;
+  /** 같은 산출물을 재로드 검증한 뒤 반환하는 명시 저장용 API. */
+  exportHwpVerified(): Promise<Uint8Array>;
   /** 현재 문서를 HWPX(ZIP+XML) 바이너리로 내보냅니다 */
   exportHwpx(): Promise<Uint8Array>;
   /** 현재 문서를 HML(XML) 바이너리로 내보냅니다 */

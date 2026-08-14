@@ -1,6 +1,16 @@
 import { defineConfig } from 'vite';
 import { resolve, extname, join } from 'path';
-import { readFileSync, readFile } from 'fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readFile,
+  readdirSync,
+  rmSync,
+  statSync,
+} from 'fs';
+import type { ResolvedConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
 const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8'));
@@ -11,6 +21,65 @@ const subsecondWasmDir = resolve(
   'rhwp-subsecond-vite',
 );
 const useSubsecondWasm = process.env.RHWP_SUBSECOND === '1';
+const publicFontsDir = resolve(__dirname, 'public', 'fonts');
+const bundledFontsDir = resolve(__dirname, '..', 'assets', 'fonts');
+
+function isBrokenWindowsFontSymlinkCheckout(): boolean {
+  try {
+    return statSync(publicFontsDir).isFile() && statSync(bundledFontsDir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function windowsFontSymlinkFallbackPlugin() {
+  let resolvedConfig: ResolvedConfig | null = null;
+  return {
+    name: 'windows-font-symlink-fallback',
+    configResolved(config: ResolvedConfig) {
+      resolvedConfig = config;
+    },
+    configureServer(server: { middlewares: { use: Function } }) {
+      if (!isBrokenWindowsFontSymlinkCheckout()) return;
+      server.middlewares.use('/fonts', (req: { url?: string }, res: any, next: Function) => {
+        if (!req.url) return next();
+        const fileName = decodeURIComponent(req.url.split('?')[0]).replace(/^\/+/, '');
+        if (!/^[A-Za-z0-9._-]+$/.test(fileName)) {
+          res.statusCode = 403;
+          return res.end();
+        }
+        const fullPath = join(bundledFontsDir, fileName);
+        readFile(fullPath, (error: NodeJS.ErrnoException | null, data: Buffer) => {
+          if (error) {
+            res.statusCode = 404;
+            return res.end();
+          }
+          const extension = extname(fullPath).toLowerCase();
+          const mimeTypes: Record<string, string> = {
+            '.woff': 'font/woff',
+            '.woff2': 'font/woff2',
+            '.ttf': 'font/ttf',
+            '.otf': 'font/otf',
+          };
+          res.setHeader('Content-Type', mimeTypes[extension] ?? 'application/octet-stream');
+          return res.end(data);
+        });
+      });
+    },
+    writeBundle() {
+      if (!resolvedConfig || !isBrokenWindowsFontSymlinkCheckout()) return;
+      const outputDir = resolve(resolvedConfig.root, resolvedConfig.build.outDir);
+      const outputFontsDir = join(outputDir, 'fonts');
+      if (existsSync(outputFontsDir)) rmSync(outputFontsDir, { recursive: true, force: true });
+      mkdirSync(outputFontsDir, { recursive: true });
+      for (const entry of readdirSync(bundledFontsDir, { withFileTypes: true })) {
+        if (entry.isFile()) {
+          copyFileSync(join(bundledFontsDir, entry.name), join(outputFontsDir, entry.name));
+        }
+      }
+    },
+  };
+}
 
 export default defineConfig({
   define: {
@@ -57,6 +126,7 @@ export default defineConfig({
     },
   },
   plugins: [
+    windowsFontSymlinkFallbackPlugin(),
     {
       name: 'ignore-subsecond-patch-artifacts',
       handleHotUpdate(context) {
@@ -96,7 +166,7 @@ export default defineConfig({
         });
       },
     },
-    VitePWA({
+    ...(process.env.RHWP_DISABLE_PWA === '1' ? [] : [VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico', 'icons/*.png'],
       manifest: {
@@ -147,6 +217,6 @@ export default defineConfig({
       devOptions: {
         enabled: false,
       },
-    }),
+    })]),
   ],
 });

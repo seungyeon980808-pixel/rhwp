@@ -41,6 +41,28 @@ use super::pagination::{
     PaginationResult,
 };
 
+fn coanchored_control_flow_tiebreak(ctrl: &Control, effective_tac_table: bool) -> u8 {
+    match ctrl {
+        Control::Table(_) if !effective_tac_table => 0,
+        Control::Picture(picture)
+            if !picture.common.treat_as_char && is_para_topbottom_float(&picture.common) =>
+        {
+            0
+        }
+        Control::Shape(shape)
+            if !shape.common().treat_as_char && is_para_topbottom_float(shape.common()) =>
+        {
+            0
+        }
+        _ => 1,
+    }
+}
+
+fn non_tac_picture_flow_height_hu(picture: &crate::model::image::Picture) -> i32 {
+    let (_, frame_height) = super::layout::picture_flow_frame_size_hu(picture);
+    frame_height.saturating_add(picture.common.margin.bottom as i32)
+}
+
 /// [#2085] 표 행-스캔 분할점 캐리 (값 왕복). split_end_cut 은 move.
 struct BlockTableRowScan {
     consumed: f64,
@@ -16462,18 +16484,16 @@ impl TypesetEngine {
                 _ => 0,
             }
         };
-        let table_flow_tiebreak = |ctrl: &Control| -> u8 {
-            match ctrl {
-                Control::Table(t) if !self.is_effective_tac_table(para, t, &fmt) => 0,
-                Control::Table(t) if self.is_effective_tac_table(para, t, &fmt) => 1,
-                _ => 1,
-            }
+        let control_flow_tiebreak = |ctrl: &Control| -> u8 {
+            let effective_tac_table = matches!(ctrl, Control::Table(t)
+                if self.is_effective_tac_table(para, t, &fmt));
+            coanchored_control_flow_tiebreak(ctrl, effective_tac_table)
         };
         let mut ctrl_order: Vec<usize> = (0..para.controls.len()).collect();
         ctrl_order.sort_by_key(|&i| {
             (
                 float_table_voffset(&para.controls[i]),
-                table_flow_tiebreak(&para.controls[i]),
+                control_flow_tiebreak(&para.controls[i]),
             )
         });
         // is_first_table/is_last_table 는 배열순서가 아닌 "놓이는 순서(ctrl_order)"
@@ -16795,9 +16815,7 @@ impl TypesetEngine {
                                     && matches!(p.common.text_wrap, TextWrap::TopAndBottom)
                                     && matches!(p.common.vert_rel_to, VertRelTo::Para) =>
                             {
-                                let h = hwpunit_to_px(p.common.height as i32, self.dpi);
-                                let mb = hwpunit_to_px(p.common.margin.bottom as i32, self.dpi);
-                                Some(h + mb)
+                                Some(hwpunit_to_px(non_tac_picture_flow_height_hu(p), self.dpi))
                             }
                             Control::Shape(s)
                                 if !s.common().treat_as_char
@@ -22878,6 +22896,7 @@ mod issue_3780_line_advance_oob {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::image::Picture;
     use crate::model::page::{ColumnDef, PageDef};
     use crate::model::paragraph::{LineSeg, Paragraph};
     use crate::model::shape::{CommonObjAttr, TextWrap, VertRelTo};
@@ -22903,6 +22922,53 @@ mod tests {
             margin_gutter: 0,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn same_offset_non_tac_picture_and_table_keep_control_order() {
+        let common = CommonObjAttr {
+            treat_as_char: false,
+            text_wrap: TextWrap::TopAndBottom,
+            vert_rel_to: VertRelTo::Para,
+            ..Default::default()
+        };
+        let controls = vec![
+            Control::Picture(Box::new(Picture {
+                common: common.clone(),
+                ..Default::default()
+            })),
+            Control::Table(Box::new(Table {
+                common,
+                ..Default::default()
+            })),
+        ];
+        let mut order = vec![0usize, 1usize];
+        order.sort_by_key(|&index| (0, coanchored_control_flow_tiebreak(&controls[index], false)));
+
+        assert_eq!(order, vec![0, 1]);
+        assert_eq!(coanchored_control_flow_tiebreak(&controls[0], false), 0);
+        assert_eq!(coanchored_control_flow_tiebreak(&controls[1], false), 0);
+    }
+
+    #[test]
+    fn non_tac_picture_flow_uses_rendered_frame_height() {
+        let picture = crate::model::image::Picture {
+            common: crate::model::shape::CommonObjAttr {
+                height: 2_350,
+                margin: crate::model::Padding {
+                    bottom: 120,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            shape_attr: crate::model::shape::ShapeComponentAttr {
+                current_height: 10_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(non_tac_picture_flow_height_hu(&picture), 10_120);
     }
 
     fn make_paragraph_with_height(line_height: i32) -> Paragraph {

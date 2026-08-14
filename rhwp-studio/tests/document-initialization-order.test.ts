@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
 
 function source(path: string): string {
-  return readFileSync(join(rootDir, path), 'utf8');
+  return readFileSync(join(rootDir, path), 'utf8').replaceAll('\r\n', '\n');
 }
 
 function initializeDocumentSource(): string {

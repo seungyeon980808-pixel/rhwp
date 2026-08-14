@@ -8,7 +8,7 @@ const CAPABILITIES = [
   'field-fill-v1',
 ];
 const LONG_RUNNING_METHODS = new Set([
-  'loadFile', 'exportHwp', 'exportHwpVerify', 'exportHwpx', 'exportHml',
+  'loadFile', 'exportHwp', 'exportHwpVerified', 'exportHwpVerify', 'exportHwpx', 'exportHml',
 ]);
 
 export function requestTimeoutFor(method, configuredTimeout) {

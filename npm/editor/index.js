@@ -53,12 +53,14 @@ export async function createEditor(container, options = {}) {
   iframe.style.height = options.height || '100%';
   iframe.style.border = 'none';
   iframe.allow = 'clipboard-read; clipboard-write';
-  el.appendChild(iframe);
 
-  // iframe 로드 대기
-  await new Promise((resolve) => {
+  // 캐시된 로컬 Studio는 appendChild 직후 동기적으로 load가 끝날 수 있으므로
+  // 리스너를 먼저 등록해 패키지 앱의 초기화 경쟁을 막는다.
+  const iframeLoaded = new Promise((resolve) => {
     iframe.addEventListener('load', resolve, { once: true });
   });
+  el.appendChild(iframe);
+  await iframeLoaded;
 
   // WASM 초기화 대기 (ready 메서드로 확인)
   let transport;
@@ -181,6 +183,12 @@ export class RhwpEditor {
    */
   async exportHwp() {
     const result = await this._request('exportHwp');
+    return result instanceof Uint8Array ? result : new Uint8Array(result || []);
+  }
+
+  /** 직렬화 후 같은 바이트를 재로드 검증하여 저장 가능한 HWP bytes를 반환합니다. */
+  async exportHwpVerified() {
+    const result = await this._request('exportHwpVerified');
     return result instanceof Uint8Array ? result : new Uint8Array(result || []);
   }
 

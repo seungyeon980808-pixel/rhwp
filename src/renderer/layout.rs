@@ -66,6 +66,14 @@ struct ColumnItemCtx<'a> {
 const ENDNOTE_BETWEEN_NOTES_BASE_FLOW_HU: i32 = 1984;
 const SINGLE_ROW_DECLARED_TRUST_MAX_RATIO: f64 = 1.5;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct BodyWideReservation {
+    para_index: usize,
+    control_index: usize,
+    bottom_y: f64,
+    is_table: bool,
+}
+
 /// 저장 outer-box paint origin 보정의 layout 단계 안전문이다.
 ///
 /// pagination 결과에 실제로 채워진 단 수가 아니라 활성 구역의 권위 단 수를
@@ -869,6 +877,42 @@ fn para_is_empty_topbottom_table_anchor(para: &Paragraph) -> bool {
             .controls
             .iter()
             .any(|ctrl| matches!(ctrl, Control::Table(t) if is_para_topbottom_float(&t.common)))
+}
+
+fn picture_vpos_gap_can_account_for_height(para: &Paragraph, control_index: usize) -> bool {
+    !para.controls.iter().enumerate().any(|(index, ctrl)| {
+        index != control_index
+            && match ctrl {
+                Control::Picture(pic) => {
+                    !pic.common.treat_as_char
+                        && matches!(pic.common.vert_rel_to, VertRelTo::Para)
+                        && matches!(pic.common.text_wrap, TextWrap::TopAndBottom)
+                }
+                Control::Shape(shape) => {
+                    let common = shape.common();
+                    !common.treat_as_char
+                        && matches!(common.vert_rel_to, VertRelTo::Para)
+                        && matches!(common.text_wrap, TextWrap::TopAndBottom)
+                }
+                Control::Table(table) => {
+                    !table.common.treat_as_char
+                        && matches!(table.common.vert_rel_to, VertRelTo::Para)
+                        && matches!(table.common.text_wrap, TextWrap::TopAndBottom)
+                }
+                _ => false,
+            }
+    })
+}
+
+fn has_prior_coanchored_non_tac_picture(para: &Paragraph, control_index: usize) -> bool {
+    para.controls.iter().take(control_index).any(|ctrl| {
+        matches!(ctrl,
+            Control::Picture(pic)
+                if !pic.common.treat_as_char
+                    && matches!(pic.common.vert_rel_to, VertRelTo::Para)
+                    && matches!(pic.common.text_wrap, TextWrap::TopAndBottom)
+        )
+    })
 }
 
 /// 빈 host 문단에 Para-relative Square 표 두 개가 함께 저장된 경우는 세로 block
@@ -4651,7 +4695,8 @@ impl LayoutEngine {
 
         // 다단 레이아웃: body_area 전체에 걸치는 TopAndBottom 개체의 예약 높이
         // (한 단에만 할당되더라도 모든 단에 적용)
-        let body_wide_reserved: Vec<(usize, f64)> = if page_content.column_contents.len() > 1 {
+        let body_wide_reserved: Vec<BodyWideReservation> = if page_content.column_contents.len() > 1
+        {
             self.calculate_body_wide_shape_reserved(
                 paragraphs,
                 &page_content.column_contents,
@@ -5405,7 +5450,7 @@ impl LayoutEngine {
         col_area: &LayoutRect,
         outline_numbering_id: u16,
         wrap_around_paras: &[super::pagination::WrapAroundPara],
-        body_wide_reserved: &[(usize, f64)],
+        body_wide_reserved: &[BodyWideReservation],
     ) -> (RenderNode, f64) {
         let col_node_id = tree.next_id();
         let mut col_node = RenderNode::new(
@@ -5433,14 +5478,29 @@ impl LayoutEngine {
             col_area,
             &layout.body_area,
         );
-        // body_area 전체에 걸치는 개체의 예약 높이 병합 (현재 단에도 반영)
-        for &(pi, bottom_y) in body_wide_reserved {
-            if let Some(existing) = shape_reserved.iter_mut().find(|(p, _)| *p == pi) {
-                if bottom_y > existing.1 {
-                    existing.1 = bottom_y;
+        let owns_body_wide_table = |reservation: &BodyWideReservation| {
+            reservation.is_table
+                && col_content.items.iter().any(|item| {
+                    matches!(item, PageItem::Table { para_index, control_index }
+                    if *para_index == reservation.para_index
+                        && *control_index == reservation.control_index)
+                })
+        };
+        // body_area 전체에 걸치는 개체의 예약 높이 병합. 표 자신의 예약은 paint 뒤
+        // layout_table_item이 소비하므로 제외하되, 같은 문단의 다른 도형 예약은 유지한다.
+        for reservation in body_wide_reserved {
+            if owns_body_wide_table(reservation) {
+                continue;
+            }
+            if let Some(existing) = shape_reserved
+                .iter_mut()
+                .find(|(p, _)| *p == reservation.para_index)
+            {
+                if reservation.bottom_y > existing.1 {
+                    existing.1 = reservation.bottom_y;
                 }
             } else {
-                shape_reserved.push((pi, bottom_y));
+                shape_reserved.push((reservation.para_index, reservation.bottom_y));
             }
         }
         let allow_negative_visual_start = col_content.endnote_flow
@@ -5464,9 +5524,9 @@ impl LayoutEngine {
         // (구역끝 미주)는 이미 new_y 이상이라 max 로 불변.
         let mut endnote_sep_body_floor: Option<f64> = None;
         // body_area 전체에 걸치는 개체: 단 시작 y_offset을 개체 하단 아래로 초기화
-        for &(_, bottom_y) in body_wide_reserved {
-            if bottom_y > y_offset {
-                y_offset = bottom_y;
+        for reservation in body_wide_reserved {
+            if !owns_body_wide_table(reservation) && reservation.bottom_y > y_offset {
+                y_offset = reservation.bottom_y;
             }
         }
         // [Task #901 Stage 8/10] TopAndBottom flow-around: anchor paragraph 의 text 가 picture
@@ -8430,7 +8490,11 @@ impl LayoutEngine {
         } else {
             para_start_y.insert(para_index, y_offset);
         }
-        let para_y_for_table = *para_start_y.get(&para_index).unwrap_or(&y_offset);
+        let para_y_for_table = paragraphs
+            .get(para_index)
+            .filter(|para| has_prior_coanchored_non_tac_picture(para, control_index))
+            .map(|_| y_offset)
+            .unwrap_or_else(|| *para_start_y.get(&para_index).unwrap_or(&y_offset));
         if let Some(para) = paragraphs.get(para_index) {
             let is_tac = para
                 .controls
@@ -9873,25 +9937,27 @@ impl LayoutEngine {
                             // [Task #1079] 파일 vpos 가 이미 그림 공간을 반영(그림 para 줄 앞
                             // gap ≥ 그림 높이)하면 그림 높이 추가 진행 생략(typeset pushdown
                             // 게이트와 동일 조건). #409 계열(gap 작음)은 현행 유지.
-                            let vpos_accounts_for_height = para_index > 0 && {
-                                const PUSHDOWN_GAP_TOL_PX: f64 = 8.0;
-                                let obj_h = hwpunit_to_px(pic.common.height as i32, self.dpi);
-                                let v_cur = paragraphs[para_index]
-                                    .line_segs
-                                    .first()
-                                    .map(|s| s.vertical_pos);
-                                let prev_end = paragraphs[para_index - 1]
-                                    .line_segs
-                                    .last()
-                                    .map(|s| s.vertical_pos + s.line_height);
-                                match (v_cur, prev_end) {
-                                    (Some(vc), Some(pe)) if vc > pe => {
-                                        hwpunit_to_px((vc - pe) as i32, self.dpi)
-                                            >= obj_h - PUSHDOWN_GAP_TOL_PX
+                            let vpos_accounts_for_height = para_index > 0
+                                && picture_vpos_gap_can_account_for_height(para, control_index)
+                                && {
+                                    const PUSHDOWN_GAP_TOL_PX: f64 = 8.0;
+                                    let obj_h = hwpunit_to_px(pic.common.height as i32, self.dpi);
+                                    let v_cur = paragraphs[para_index]
+                                        .line_segs
+                                        .first()
+                                        .map(|s| s.vertical_pos);
+                                    let prev_end = paragraphs[para_index - 1]
+                                        .line_segs
+                                        .last()
+                                        .map(|s| s.vertical_pos + s.line_height);
+                                    match (v_cur, prev_end) {
+                                        (Some(vc), Some(pe)) if vc > pe => {
+                                            hwpunit_to_px((vc - pe) as i32, self.dpi)
+                                                >= obj_h - PUSHDOWN_GAP_TOL_PX
+                                        }
+                                        _ => false,
                                     }
-                                    _ => false,
-                                }
-                            };
+                                };
                             result_y = self.layout_body_picture(
                                 tree,
                                 col_node,

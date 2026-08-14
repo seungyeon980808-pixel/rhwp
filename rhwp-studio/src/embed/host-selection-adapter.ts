@@ -65,6 +65,7 @@ export function readHostSelection(
       || !startPath
       || !endPath
       || !isSameCellContainer(startPath, endPath)
+      || cellParagraphIndex(startPath) !== cellParagraphIndex(endPath)
     ) {
       return null;
     }
@@ -77,13 +78,16 @@ export function readHostSelection(
       cellParagraphIndex(endPath),
       end.charOffset,
     );
+    const text = wasm.getClipboardText();
+    if (!isPlainTextSelection(text)) return null;
     return {
-      text: wasm.getClipboardText(),
+      text,
       signature: `${cellPositionKey(start, startPath)}|${cellPositionKey(end, endPath)}`,
       scope: 'cell',
     };
   }
   if (start.parentParaIndex !== undefined || end.parentParaIndex !== undefined) return null;
+  if (start.paragraphIndex !== end.paragraphIndex) return null;
   wasm.copySelection(
     start.sectionIndex,
     start.paragraphIndex,
@@ -91,8 +95,10 @@ export function readHostSelection(
     end.paragraphIndex,
     end.charOffset,
   );
+  const text = wasm.getClipboardText();
+  if (!isPlainTextSelection(text)) return null;
   return {
-    text: wasm.getClipboardText(),
+    text,
     signature: `${bodyPositionKey(start)}|${bodyPositionKey(end)}`,
     scope: 'body',
   };
@@ -104,7 +110,7 @@ export function replaceHostSelection(
   end: DocumentPosition,
   text: string,
 ): DocumentPosition | null {
-  if (start.sectionIndex !== end.sectionIndex || /[\r\n\t]/.test(text)) return null;
+  if (start.sectionIndex !== end.sectionIndex || !isPlainReplacementText(text)) return null;
   if (start.parentParaIndex !== undefined && end.parentParaIndex !== undefined) {
     const startPath = cellPathOf(start);
     const endPath = cellPathOf(end);
@@ -113,6 +119,7 @@ export function replaceHostSelection(
       || !startPath
       || !endPath
       || !isSameCellContainer(startPath, endPath)
+      || cellParagraphIndex(startPath) !== cellParagraphIndex(endPath)
     ) {
       return null;
     }
@@ -138,6 +145,7 @@ export function replaceHostSelection(
     return { ...start, charOffset: start.charOffset + text.length };
   }
   if (start.parentParaIndex !== undefined || end.parentParaIndex !== undefined) return null;
+  if (start.paragraphIndex !== end.paragraphIndex) return null;
   const deleted = wasm.deleteRange(
     start.sectionIndex,
     start.paragraphIndex,
@@ -197,4 +205,12 @@ function cellPositionKey(position: DocumentPosition, path: CellPath): string {
     .map((entry) => `${entry.controlIndex}.${entry.cellIndex}.${entry.cellParaIndex}`)
     .join('/');
   return `cell:${position.sectionIndex}:${position.parentParaIndex}:${pathKey}:${position.charOffset}`;
+}
+
+function isPlainTextSelection(text: string): boolean {
+  return !/[\u0000-\u001f\u007f\ufffc]/u.test(text);
+}
+
+function isPlainReplacementText(text: string): boolean {
+  return !/[\u0000-\u001f\u007f\ufffc]/u.test(text);
 }

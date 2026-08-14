@@ -1970,6 +1970,11 @@ impl LayoutEngine {
                                     } else {
                                         pic_y
                                     };
+                                    let pic_y = super::table_layout::clamp_restricted_cell_overlay_picture_y(
+                                        &pic.common,
+                                        pic_y,
+                                        &inner_area,
+                                    );
                                     let pic_area = LayoutRect {
                                         x: pic_x,
                                         y: pic_y,
@@ -3583,7 +3588,9 @@ mod tests {
         expand_terminal_cell_clip_to_nested_table_descendants, fragment_vpos_origin,
     };
     use crate::model::paragraph::{LineSeg, Paragraph};
+    use crate::model::shape::{CommonObjAttr, TextWrap, VertRelTo};
     use crate::model::table::Cell;
+    use crate::renderer::page_layout::LayoutRect;
     use crate::renderer::render_tree::{
         BoundingBox, LineNode, RenderNode, RenderNodeType, TableCellNode, TableNode,
     };
@@ -3620,6 +3627,29 @@ mod tests {
         // Center/Bottom valign의 text_y_start에는 이미 offset이 들어 있다. 물리 셀
         // 하단은 어떤 valign이든 cell_y + cell_h - pad_bottom으로 고정된다.
         assert_eq!(cell_content_bottom(100.0, 80.0, 7.0), 173.0);
+    }
+
+    #[test]
+    fn split_cell_reuses_restricted_overlay_top_clamp() {
+        let common = CommonObjAttr {
+            flow_with_text: true,
+            text_wrap: TextWrap::BehindText,
+            vert_rel_to: VertRelTo::Para,
+            ..Default::default()
+        };
+        let inner = LayoutRect {
+            x: 0.0,
+            y: 120.0,
+            width: 200.0,
+            height: 240.0,
+        };
+
+        assert_eq!(
+            super::super::table_layout::clamp_restricted_cell_overlay_picture_y(
+                &common, 40.0, &inner,
+            ),
+            120.0
+        );
     }
 
     fn clipped_cell_with_overflowing_nested_table() -> RenderNode {

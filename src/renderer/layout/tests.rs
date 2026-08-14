@@ -1475,6 +1475,260 @@ fn test_layout_table_cell_positions() {
 }
 
 #[test]
+fn body_wide_topbottom_table_paints_at_body_top_before_reserving_both_columns() {
+    let engine = LayoutEngine::with_default_dpi();
+    let column_def = ColumnDef {
+        column_count: 2,
+        same_width: true,
+        spacing: 1_134,
+        ..Default::default()
+    };
+    let layout = PageLayoutInfo::from_page_def_default(&a4_page_def(), &column_def);
+    let table_width_hu =
+        a4_page_def().width - a4_page_def().margin_left - a4_page_def().margin_right;
+    let table = Table {
+        row_count: 2,
+        col_count: 2,
+        row_sizes: vec![2, 2],
+        common: CommonObjAttr {
+            width: table_width_hu as u32,
+            height: 4_000,
+            treat_as_char: false,
+            text_wrap: TextWrap::TopAndBottom,
+            vert_rel_to: VertRelTo::Para,
+            ..Default::default()
+        },
+        cells: vec![
+            Cell {
+                row: 0,
+                col: 0,
+                width: table_width_hu as u32 / 2,
+                height: 2_000,
+                ..Default::default()
+            },
+            Cell {
+                row: 0,
+                col: 1,
+                width: table_width_hu as u32 / 2,
+                height: 2_000,
+                ..Default::default()
+            },
+            Cell {
+                row: 1,
+                col: 0,
+                width: table_width_hu as u32 / 2,
+                height: 2_000,
+                ..Default::default()
+            },
+            Cell {
+                row: 1,
+                col: 1,
+                width: table_width_hu as u32 / 2,
+                height: 2_000,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let paragraphs = vec![
+        Paragraph {
+            controls: vec![Control::Table(Box::new(table))],
+            line_segs: vec![LineSeg {
+                vertical_pos: 0,
+                line_height: 1_200,
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        Paragraph {
+            text: "right column".to_string(),
+            line_segs: vec![LineSeg {
+                vertical_pos: 4_000,
+                line_height: 1_000,
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    ];
+    let composed: Vec<_> = paragraphs.iter().map(compose_paragraph).collect();
+    let page_content = PageContent {
+        page_index: 0,
+        page_number: 0,
+        section_index: 0,
+        layout: layout.clone(),
+        column_contents: vec![
+            ColumnContent {
+                column_index: 0,
+                start_height: 0.0,
+                endnote_flow: false,
+                items: vec![PageItem::Table {
+                    para_index: 0,
+                    control_index: 0,
+                }],
+                zone_layout: Some(layout.clone()),
+                zone_y_offset: 0.0,
+                wrap_around_paras: Vec::new(),
+                used_height: 0.0,
+                wrap_anchors: std::collections::HashMap::new(),
+            },
+            ColumnContent {
+                column_index: 1,
+                start_height: 0.0,
+                endnote_flow: false,
+                items: vec![PageItem::FullParagraph { para_index: 1 }],
+                zone_layout: Some(layout.clone()),
+                zone_y_offset: 0.0,
+                wrap_around_paras: Vec::new(),
+                used_height: 0.0,
+                wrap_anchors: std::collections::HashMap::new(),
+            },
+        ],
+        active_header: None,
+        active_footer: None,
+        page_number_pos: None,
+        page_hide: None,
+        footnotes: Vec::new(),
+        active_master_page: None,
+        extra_master_pages: Vec::new(),
+    };
+    let tree = engine.build_render_tree(
+        &page_content,
+        &paragraphs,
+        &paragraphs,
+        &paragraphs,
+        &composed,
+        &ResolvedStyleSet::default(),
+        &FootnoteShape::default(),
+        &[],
+        None,
+        &[],
+        None,
+        0,
+        &[],
+    );
+    let body = tree
+        .root
+        .children
+        .iter()
+        .find(|node| matches!(node.node_type, RenderNodeType::Body { .. }))
+        .expect("body");
+    let table_node = body.children[0]
+        .children
+        .iter()
+        .find(|node| matches!(node.node_type, RenderNodeType::Table(_)))
+        .expect("body-wide table");
+
+    assert!(
+        (table_node.bbox.y - layout.body_area.y).abs() < 0.1,
+        "body-wide float must paint at body top before its bottom reserves both columns: table_y={}, body_y={}",
+        table_node.bbox.y,
+        layout.body_area.y,
+    );
+}
+
+#[test]
+fn body_wide_reservations_keep_control_identity_for_same_paragraph_objects() {
+    let engine = LayoutEngine::with_default_dpi();
+    let layout = PageLayoutInfo::from_page_def_default(
+        &a4_page_def(),
+        &ColumnDef {
+            column_count: 2,
+            same_width: true,
+            ..Default::default()
+        },
+    );
+    let width =
+        (a4_page_def().width - a4_page_def().margin_left - a4_page_def().margin_right) as u32;
+    let common = CommonObjAttr {
+        width,
+        height: 2_000,
+        treat_as_char: false,
+        text_wrap: TextWrap::TopAndBottom,
+        vert_rel_to: VertRelTo::Para,
+        ..Default::default()
+    };
+    let paragraphs = vec![Paragraph {
+        controls: vec![
+            Control::Picture(Box::new(Picture {
+                common: common.clone(),
+                ..Default::default()
+            })),
+            Control::Table(Box::new(Table {
+                common,
+                ..Default::default()
+            })),
+        ],
+        ..Default::default()
+    }];
+    let columns = vec![ColumnContent {
+        column_index: 0,
+        start_height: 0.0,
+        endnote_flow: false,
+        items: vec![
+            PageItem::Shape {
+                para_index: 0,
+                control_index: 0,
+            },
+            PageItem::Table {
+                para_index: 0,
+                control_index: 1,
+            },
+        ],
+        zone_layout: Some(layout.clone()),
+        zone_y_offset: 0.0,
+        wrap_around_paras: Vec::new(),
+        used_height: 0.0,
+        wrap_anchors: std::collections::HashMap::new(),
+    }];
+
+    let reservations =
+        engine.calculate_body_wide_shape_reserved(&paragraphs, &columns, &layout.body_area);
+
+    assert_eq!(reservations.len(), 2);
+    assert!(reservations.iter().any(|reservation| {
+        reservation.para_index == 0 && reservation.control_index == 0 && !reservation.is_table
+    }));
+    assert!(reservations.iter().any(|reservation| {
+        reservation.para_index == 0 && reservation.control_index == 1 && reservation.is_table
+    }));
+}
+
+#[test]
+fn coanchored_flow_sibling_disables_picture_vpos_gap_height_accounting() {
+    let common = CommonObjAttr {
+        treat_as_char: false,
+        text_wrap: TextWrap::TopAndBottom,
+        vert_rel_to: VertRelTo::Para,
+        ..Default::default()
+    };
+    let picture_only = Paragraph {
+        controls: vec![Control::Picture(Box::new(Picture {
+            common: common.clone(),
+            ..Default::default()
+        }))],
+        ..Default::default()
+    };
+    assert!(picture_vpos_gap_can_account_for_height(&picture_only, 0));
+
+    let coanchored = Paragraph {
+        controls: vec![
+            Control::Picture(Box::new(Picture {
+                common: common.clone(),
+                ..Default::default()
+            })),
+            Control::Table(Box::new(Table {
+                common,
+                ..Default::default()
+            })),
+        ],
+        ..Default::default()
+    };
+    assert!(!picture_vpos_gap_can_account_for_height(&coanchored, 0));
+    assert!(has_prior_coanchored_non_tac_picture(&coanchored, 1));
+    assert!(!has_prior_coanchored_non_tac_picture(&coanchored, 0));
+}
+
+#[test]
 fn test_layout_rect_to_bbox() {
     let rect = LayoutRect {
         x: 10.0,

@@ -11,6 +11,17 @@ import {
 import { routeEmbedRequest, type EmbedRpcHandlers } from '../src/embed/rpc-router.ts';
 import { installEmbedRuntime } from '../src/embed/runtime.ts';
 
+test('verified HWP export returns the exact bytes produced by its verifying handler', async () => {
+  const expected = new Uint8Array([1, 3, 5, 7]);
+  const result = await routeEmbedRequest(
+    'exportHwpVerified',
+    {},
+    { exportHwpVerified: async () => expected } as EmbedRpcHandlers,
+  );
+
+  assert.equal(result, expected);
+});
+
 test('renderer diagnostics v1 keeps auto intent in the additive selection field', () => {
   const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
   assert.match(

@@ -103,6 +103,25 @@ fn has_initial_tac_shape_host(paragraphs: &[Paragraph]) -> bool {
     })
 }
 
+pub(super) fn clamp_restricted_cell_overlay_picture_y(
+    common: &CommonObjAttr,
+    pic_y: f64,
+    inner_area: &LayoutRect,
+) -> f64 {
+    if !common.treat_as_char
+        && common.flow_with_text
+        && matches!(common.vert_rel_to, VertRelTo::Para)
+        && matches!(
+            common.text_wrap,
+            TextWrap::BehindText | TextWrap::InFrontOfText
+        )
+    {
+        pic_y.max(inner_area.y)
+    } else {
+        pic_y
+    }
+}
+
 /// native HWP5와 original HWPX의 빈 RowBreak 그림 표가 fresh page로 이월된 뒤에도, 내부 picture가
 /// 이월 전 outer host 좌표를 상쇄하지 않도록 하는 정확한 형상 판정이다.
 ///
@@ -4891,6 +4910,11 @@ impl LayoutEngine {
                             } else {
                                 pic_y
                             };
+                            let pic_y = clamp_restricted_cell_overlay_picture_y(
+                                &pic.common,
+                                pic_y,
+                                &inner_area,
+                            );
                             let pic_area = LayoutRect {
                                 x: pic_x,
                                 y: pic_y,
@@ -12315,6 +12339,7 @@ impl LayoutEngine {
 #[cfg(test)]
 mod row_cut_tests {
     use super::{
+        clamp_restricted_cell_overlay_picture_y,
         stored_layout_relocated_empty_rowbreak_picture_resets_offset,
         trailing_reservation_after_final_source_owner, CellUnit, LayoutEngine,
         MixedNestedOwnerMarker, RecursiveBlockPreludeRole,
@@ -12325,6 +12350,7 @@ mod row_cut_tests {
     use crate::model::shape::{CommonObjAttr, TextWrap, VertRelTo};
     use crate::model::table::{Cell, Table};
     use crate::renderer::composer::{ComposedLine, ComposedParagraph, ComposedTextRun};
+    use crate::renderer::page_layout::LayoutRect;
     use crate::renderer::style_resolver::ResolvedStyleSet;
 
     /// line_height=1200 HU (=16 px @96dpi), line_spacing=0 인 N줄 텍스트 문단.
@@ -12434,6 +12460,27 @@ mod row_cut_tests {
             empty_spacer: false,
             non_inline_control_range: None,
         }
+    }
+
+    #[test]
+    fn restricted_para_overlay_picture_cannot_start_above_its_cell() {
+        let common = CommonObjAttr {
+            flow_with_text: true,
+            text_wrap: TextWrap::BehindText,
+            vert_rel_to: VertRelTo::Para,
+            ..Default::default()
+        };
+        let inner = LayoutRect {
+            x: 10.0,
+            y: 300.0,
+            width: 200.0,
+            height: 280.0,
+        };
+
+        assert_eq!(
+            clamp_restricted_cell_overlay_picture_y(&common, 182.0, &inner),
+            300.0
+        );
     }
 
     #[test]

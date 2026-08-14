@@ -6407,6 +6407,21 @@ impl HwpDocument {
         ))
     }
 
+    /// 직렬화한 바로 그 바이트를 재로드해 쪽 수를 검증한 뒤 반환한다.
+    /// 저장 경로가 `exportHwpVerify`와 `exportHwp`를 따로 호출해 서로 다른 산출물을
+    /// 검증·영속화하는 TOCTOU를 만들지 않도록 하는 명시 저장용 API다.
+    #[wasm_bindgen(js_name = exportHwpVerified)]
+    pub fn export_hwp_verified(&mut self) -> Result<Vec<u8>, JsValue> {
+        let verification = self.serialize_hwp_with_verify().map_err(JsValue::from)?;
+        if !verification.recovered {
+            return Err(JsValue::from_str(&format!(
+                "HWP reload verification failed: pages {} -> {}",
+                verification.page_count_before, verification.page_count_after
+            )));
+        }
+        Ok(verification.bytes)
+    }
+
     /// 원본 파일 형식을 반환한다 ("hwp", "hwpx", 또는 "hml").
     #[wasm_bindgen(js_name = getSourceFormat)]
     pub fn get_source_format(&self) -> String {

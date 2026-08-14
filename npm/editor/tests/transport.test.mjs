@@ -314,6 +314,51 @@ test('createEditor 연결 실패는 생성한 iframe과 transport를 정리한�
   }
 });
 
+test('createEditor는 iframe을 붙이기 전에 load 리스너를 등록한다', async () => {
+  const originalDocument = globalThis.document;
+  const originalWindow = globalThis.window;
+  let loadListener = null;
+  const contentWindow = {
+    postMessage(message, _targetOrigin, ports) {
+      const server = ports[0];
+      server.onmessage = ({ data }) => server.postMessage({
+        type: 'rhwp-response', version: 1, sessionId: data.sessionId,
+        id: data.id, result: true,
+      });
+      server.start();
+      server.postMessage({
+        type: 'rhwp-connected', version: 1, sessionId: message.sessionId,
+        capabilities: ['transferable-array-buffer'],
+      });
+    },
+  };
+  const iframe = {
+    contentWindow,
+    style: {},
+    addEventListener(type, listener) {
+      if (type === 'load') loadListener = listener;
+    },
+    remove() {},
+  };
+  const container = {
+    appendChild() {
+      assert.equal(typeof loadListener, 'function', 'append 전에 load listener가 있어야 한다');
+      queueMicrotask(loadListener);
+    },
+  };
+  globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  globalThis.document = { createElement: () => iframe };
+
+  try {
+    const editor = await createEditor(container, { studioUrl: 'https://studio.example/app' });
+    assert.ok(editor);
+    editor.destroy();
+  } finally {
+    globalThis.document = originalDocument;
+    globalThis.window = originalWindow;
+  }
+});
+
 test('createEditor는 지원하지 않는 renderer를 iframe 생성 전에 거부한다', async () => {
   const originalDocument = globalThis.document;
   let created = false;

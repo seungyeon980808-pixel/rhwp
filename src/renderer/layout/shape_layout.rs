@@ -14,7 +14,7 @@ use super::utils::{
     drawing_to_line_style, drawing_to_shape_style, extract_shape_transform, find_bin_data,
     find_bin_data_bytes,
 };
-use super::LayoutEngine;
+use super::{BodyWideReservation, LayoutEngine};
 use super::{CellContext, CellPathEntry};
 use crate::model::bin_data::BinDataContent;
 use crate::model::control::Control;
@@ -3590,10 +3590,10 @@ impl LayoutEngine {
         paragraphs: &[Paragraph],
         column_contents: &[super::super::pagination::ColumnContent],
         body_area: &LayoutRect,
-    ) -> Vec<(usize, f64)> {
+    ) -> Vec<BodyWideReservation> {
         use crate::model::shape::TextWrap;
 
-        let mut result: Vec<(usize, f64)> = Vec::new();
+        let mut result: Vec<BodyWideReservation> = Vec::new();
 
         for col_content in column_contents {
             for item in &col_content.items {
@@ -3645,13 +3645,12 @@ impl LayoutEngine {
                 if shape_y > threshold_y {
                     continue;
                 }
-                if let Some(existing) = result.iter_mut().find(|(pi, _)| *pi == *para_index) {
-                    if bottom_y > existing.1 {
-                        existing.1 = bottom_y;
-                    }
-                } else {
-                    result.push((*para_index, bottom_y));
-                }
+                result.push(BodyWideReservation {
+                    para_index: *para_index,
+                    control_index: *control_index,
+                    bottom_y,
+                    is_table: matches!(ctrl, Control::Table(_)),
+                });
             }
         }
 
