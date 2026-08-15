@@ -256,6 +256,81 @@ if (state.hmlSavable) {
 | `xmlPath` | `string` | 해당 요소의 XML 경로 |
 | `message` | `string` | 사람이 읽을 수 있는 사유 |
 | `preserved` | `false` | 항상 `false` — 해당 요소가 HML로 보존되지 않음을 뜻함 |
+
+### 승인된 단순 템플릿 편집
+
+`inspectApprovedTemplate()`은 현재 문서의 구조 digest, 복잡 문서 보호 상태, 누름틀과
+안전 후보 주소를 반환합니다. 후보에는 원문 대신 해시만 포함됩니다. 화면 좌표를
+템플릿 주소로 저장하지 마세요.
+
+```javascript
+const inspection = await editor.inspectApprovedTemplate();
+if (inspection.protection.status === 'protected') {
+  throw new Error('복합 문서는 자동 입력 대상이 아닙니다.');
+}
+
+const cell = inspection.tableCells.find((candidate) => candidate.safe);
+const request = {
+  schemaVersion: 1,
+  templateId: 'approved-form-v1',
+  expectedStructureDigest: inspection.structureDigest,
+  targets: [{
+    kind: 'table-cell',
+    targetId: 'student-name',
+    tableIndex: cell.tableIndex,
+    row: cell.row,
+    col: cell.col,
+    expectedTextHash: cell.textHash,
+    adjacentLabelDigest: cell.adjacentLabelDigest,
+    mergedAnchor: cell.mergedAnchor,
+    value: '김하늘',
+    maxChars: 20,
+    maxLines: 1,
+    keepStyle: true,
+  }],
+};
+
+const preview = await editor.preflightApprovedTemplateEdits(request);
+if (!preview.ok) throw new Error(preview.reason ?? 'preflight rejected');
+// preview.targets의 originalValue/proposedValue, 근거와 경고를 호스트 UI에서 검토한 뒤 적용합니다.
+const applied = await editor.applyApprovedTemplateEdits(request, preview.preflightToken);
+if (applied.ok) {
+  const undone = await editor.undo(); // 방금 적용한 snapshot 한 건만 되돌림
+  if (!undone.ok && undone.reason !== 'empty-history') console.warn(undone.reason);
+}
+```
+
+v1 편집 범위는 편집 가능한 native field 여러 개, 본문 한 문단 전체, 또는 최상위 표
+한 셀 전체 중 하나입니다. body/table을 섞거나 여러 일반 셀을 한 번에 바꾸는 요청,
+중첩 표, 병합으로 덮인 셀, 그림·도형 포함 셀, 구조/인접 라벨 불일치, 확정 overflow는
+전체 거부됩니다. 성공한 apply는 Studio의 snapshot history 한 단위이며, 요청 중 일부만
+적용되지 않습니다. preflight는 적용하지 않으며 apply 시 같은 검증을 다시 수행합니다.
+
+후보 `textHash`는 UTF-8 바이트 기준
+`SHA-256("rhwp-approved-template-text-v1\0" || normalizedText)`를
+`sha256:<lowercase hex>`로 표현합니다. body는 문단 원문, cell은 셀 문단을 `\n`으로
+연결한 뒤 양끝 공백을 제거한 문자열입니다. 등록 UI는 `getSelectionSnapshot().address`를
+inspection 주소와 조인하고 textHash도 일치시켜야 합니다. cell의 `pathDepth > 1`은
+중첩 표이므로 등록하지 마세요.
+
+### editor.extractReferenceText(data, fileName, options?)
+
+HWP/HWPX/HML 바이트를 현재 편집 문서와 분리된 임시 문서로 열어 페이지별 텍스트를
+제한 추출합니다. 이 호출은 현재 문서, dirty 상태, undo, renderer cache를 바꾸지 않습니다.
+
+```javascript
+const reference = await editor.extractReferenceText(bytes, 'reference.hwp', {
+  maxChars: 100_000,
+  maxPages: 50,
+});
+console.log(reference.pages, reference.warnings);
+```
+
+파일 이름은 경로가 없는 basename이어야 하고 HWP/HWPX/HML 확장자만 허용합니다.
+입력은 50 MiB, `maxChars`는 1,000,000, `maxPages`는 100이 상한입니다. 실제 파싱 형식과
+확장자가 다르면 `format-mismatch`, 제한에 걸리면 `page-limit`/`character-limit` 경고가
+반환됩니다. 이 API는 읽기 전용 텍스트 추출이며 원본 저장이나 편집 권한을 부여하지 않습니다.
+
 ### editor.notifySaved(fileName?)
 
 내보내기 바이트의 영속화(서버 업로드 또는 호스트 핸드오프) 완료를 스튜디오에
@@ -275,6 +350,20 @@ await editor.notifySaved();         // 저장 완료 통지 — dirty 해제 + �
   변경이 있었는지 여부(멱등 호출 관찰용).
 - 스튜디오가 `notify-saved-v1` capability를 광고하지 않으면(구버전 스튜디오 또는
   legacy 폴백 연결) 요청을 보내지 않고 예외를 던집니다.
+
+데스크톱처럼 내보내기와 실제 파일 쓰기 사이에 사용자가 계속 편집할 수 있는 호스트는
+리비전 조건부 저장 API를 사용해야 합니다. `exportDocumentForSave()`는 검증된 바이트와
+같은 시점의 revision을 함께 반환하고, `notifySavedIfUnchanged()`는 그 뒤 문서가 바뀌지
+않았을 때만 dirty와 복구 draft를 해제합니다.
+
+```javascript
+const exported = await editor.exportDocumentForSave('hwp');
+await writeFileAtomically(exported.bytes);
+const saved = await editor.notifySavedIfUnchanged(exported.revision, 'saved.hwp');
+if (!saved.ok) {
+  // 디스크 쓰기는 끝났지만 더 최신 편집이 남아 있으므로 다시 저장해야 합니다.
+}
+```
 
 ### editor.destroy()
 

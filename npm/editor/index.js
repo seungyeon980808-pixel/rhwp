@@ -10,6 +10,10 @@
  */
 
 import { EditorTransport } from './transport.js';
+import {
+  validateApprovedTemplateEditResult,
+  validateApprovedTemplateInspection,
+} from './approved-template-contracts.js';
 
 const DEFAULT_STUDIO_URL = 'https://edwardkim.github.io/rhwp/';
 
@@ -244,6 +248,46 @@ export class RhwpEditor {
     return this._request('notifySaved', params);
   }
 
+  /** 검증된 HWP 바이트와 같은 JS turn의 문서 revision을 저장용으로 반환합니다. */
+  async exportDocumentForSave(format) {
+    if (!['hwp', 'hwpx', 'hml'].includes(format)) {
+      throw new TypeError('format must be hwp, hwpx, or hml');
+    }
+    if (!this._transport.supports('revisioned-save-v1')) {
+      throw new Error('Revisioned save v1 is not supported by this Studio');
+    }
+    const result = await this._request('exportDocumentForSave', { format });
+    const keys = result && typeof result === 'object' ? Object.keys(result) : [];
+    if (result?.schemaVersion !== 1 || !(result.bytes instanceof Uint8Array)
+        || !Number.isSafeInteger(result.revision) || result.revision < 0
+        || keys.length !== 3) {
+      throw new Error('Invalid revisioned save export from Studio');
+    }
+    return result;
+  }
+
+  /** 내보낸 뒤 문서가 바뀌지 않은 경우에만 dirty와 복구 draft를 해제합니다. */
+  async notifySavedIfUnchanged(revision, fileName) {
+    if (!Number.isSafeInteger(revision) || revision < 0) {
+      throw new TypeError('revision must be a non-negative safe integer');
+    }
+    if (!this._transport.supports('revisioned-save-v1')) {
+      throw new Error('Revisioned save v1 is not supported by this Studio');
+    }
+    const result = await this._request('notifySavedIfUnchanged', {
+      revision,
+      ...(typeof fileName === 'string' && fileName.length > 0 ? { fileName } : {}),
+    });
+    const keys = result && typeof result === 'object' ? Object.keys(result) : [];
+    const valid = result?.ok === true
+      ? typeof result.wasDirty === 'boolean' && keys.length === 3
+      : result?.ok === false && result.reason === 'document-changed' && keys.length === 3;
+    if (!valid || !Number.isSafeInteger(result.currentRevision) || result.currentRevision < 0) {
+      throw new Error('Invalid revisioned save acknowledgement from Studio');
+    }
+    return result;
+  }
+
   /**
    * 현재 텍스트 선택을 변경 충돌 검사용 snapshot으로 반환합니다.
    * 선택이 없거나 지원 범위 밖이면 null을 반환합니다.
@@ -289,6 +333,102 @@ export class RhwpEditor {
     }
     if (!Array.isArray(entries)) throw new TypeError('entries must be an array');
     return this._request('fillFields', { entries });
+  }
+
+  /** 승인 템플릿의 구조 digest와 안전한 가상 필드 후보를 읽기 전용으로 조사합니다. */
+  async inspectApprovedTemplate() {
+    if (!this._transport.supports('approved-template-edit-v1')) {
+      throw new Error('Approved template edit v1 is not supported by this Studio');
+    }
+    return validateApprovedTemplateInspection(await this._request('inspectApprovedTemplate'));
+  }
+
+  /** 승인 템플릿 편집 요청 전체를 문서 변경 없이 사전 검증합니다. */
+  async preflightApprovedTemplateEdits(request) {
+    if (!this._transport.supports('approved-template-edit-v1')) {
+      throw new Error('Approved template edit v1 is not supported by this Studio');
+    }
+    if (!request || typeof request !== 'object') {
+      throw new TypeError('request must be an object');
+    }
+    return validateApprovedTemplateEditResult(
+      await this._request('preflightApprovedTemplateEdits', { request }),
+    );
+  }
+
+  /** 검증 token이 현재 문서와 일치할 때만 요청 전체를 한 undo 단위로 적용합니다. */
+  async applyApprovedTemplateEdits(request, preflightToken) {
+    if (!this._transport.supports('approved-template-edit-v1')) {
+      throw new Error('Approved template edit v1 is not supported by this Studio');
+    }
+    if (!request || typeof request !== 'object') {
+      throw new TypeError('request must be an object');
+    }
+    if (typeof preflightToken !== 'string' || preflightToken.length === 0) {
+      throw new TypeError('preflightToken must be a non-empty string');
+    }
+    return validateApprovedTemplateEditResult(
+      await this._request('applyApprovedTemplateEdits', { request, preflightToken }),
+    );
+  }
+
+  /** Studio 히스토리의 최상위 편집 한 건을 기존 Undo 경로로 되돌립니다. */
+  async undo() {
+    if (!this._transport.supports('history-undo-v1')) {
+      throw new Error('History undo v1 is not supported by this Studio');
+    }
+    const result = await this._request('undo');
+    const keys = result && typeof result === 'object' ? Object.keys(result) : [];
+    if (result?.ok === true && keys.length === 1 && keys[0] === 'ok') {
+      return result;
+    }
+    if (result?.ok === false
+        && keys.length === 2
+        && keys.includes('ok')
+        && keys.includes('reason')
+        && ['empty-history', 'editor-not-ready', 'undo-failed'].includes(result.reason)) {
+      return result;
+    }
+    throw new Error('Invalid history undo result from Studio');
+  }
+
+  /**
+   * HWP/HWPX/HML 바이트에서 참고 텍스트를 추출합니다.
+   * Studio는 현재 편집 문서와 분리된 임시 WASM 문서를 사용하므로 dirty/undo/render 상태를
+   * 바꾸지 않습니다.
+   */
+  async extractReferenceText(data, fileName, options = {}) {
+    if (!this._transport.supports('reference-text-extract-v1')) {
+      throw new Error('Reference text extract v1 is not supported by this Studio');
+    }
+    if (!(data instanceof ArrayBuffer) && !ArrayBuffer.isView(data)) {
+      throw new TypeError('data must be an ArrayBuffer or typed array');
+    }
+    const byteLength = data.byteLength;
+    if (byteLength === 0 || byteLength > 50 * 1024 * 1024) {
+      throw new RangeError('reference data must be between 1 byte and 50 MiB');
+    }
+    if (typeof fileName !== 'string' || fileName.length > 255
+        || /[\\/]/u.test(fileName) || !/\.(?:hwp|hwpx|hml)$/iu.test(fileName)) {
+      throw new TypeError('fileName must be a basename ending in HWP, HWPX, or HML');
+    }
+    if (!options || typeof options !== 'object' || Array.isArray(options)
+        || Object.keys(options).some((key) => key !== 'maxChars' && key !== 'maxPages')) {
+      throw new TypeError('options must contain only maxChars and maxPages');
+    }
+    const maxChars = options.maxChars ?? 100_000;
+    const maxPages = options.maxPages ?? 50;
+    if (!Number.isSafeInteger(maxChars) || maxChars < 1 || maxChars > 1_000_000) {
+      throw new RangeError('maxChars must be an integer between 1 and 1000000');
+    }
+    if (!Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > 100) {
+      throw new RangeError('maxPages must be an integer between 1 and 100');
+    }
+    return this._request('extractReferenceText', {
+      data,
+      fileName,
+      options: { maxChars, maxPages },
+    });
   }
 
   /**

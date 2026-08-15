@@ -13,6 +13,7 @@ export interface DirtyStateChange {
  */
 export class DocumentDirtyState {
   private dirty = false;
+  private documentRevision = 0;
   private beforeUnloadWindow: Window | null = null;
   private readonly eventBus: EventBus;
   private readonly beforeUnloadHandler = (event: BeforeUnloadEvent): string | void => {
@@ -30,12 +31,24 @@ export class DocumentDirtyState {
     return this.dirty;
   }
 
+  revision(): number {
+    return this.documentRevision;
+  }
+
   markDirty(reason?: string): void {
+    this.documentRevision += 1;
     this.setDirty(true, reason);
   }
 
   markClean(reason?: string): void {
+    this.documentRevision += 1;
     this.setDirty(false, reason);
+  }
+
+  markCleanIfRevision(expectedRevision: number, reason?: string): boolean {
+    if (this.documentRevision !== expectedRevision) return false;
+    this.markClean(reason);
+    return true;
   }
 
   installBeforeUnload(windowLike: Window): () => void {

@@ -10,6 +10,7 @@
   },
   "files": [
     "index.js",
+    "approved-template-contracts.js",
     "index.d.ts",
     "transport.js",
     "README.md"

@@ -1,3 +1,4 @@
+pub mod approved_template;
 mod clipboard;
 mod document;
 mod footnote_ops;

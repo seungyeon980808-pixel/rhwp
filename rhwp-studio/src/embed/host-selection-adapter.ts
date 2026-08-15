@@ -84,6 +84,17 @@ export function readHostSelection(
       text,
       signature: `${cellPositionKey(start, startPath)}|${cellPositionKey(end, endPath)}`,
       scope: 'cell',
+      address: {
+        kind: 'cell',
+        sectionIndex: start.sectionIndex,
+        parentParagraphIndex: start.parentParaIndex,
+        controlIndex: startPath[0].controlIndex,
+        cellIndex: startPath[0].cellIndex,
+        cellParagraphIndex: cellParagraphIndex(startPath),
+        pathDepth: startPath.length,
+        startOffset: start.charOffset,
+        endOffset: end.charOffset,
+      },
     };
   }
   if (start.parentParaIndex !== undefined || end.parentParaIndex !== undefined) return null;
@@ -101,6 +112,13 @@ export function readHostSelection(
     text,
     signature: `${bodyPositionKey(start)}|${bodyPositionKey(end)}`,
     scope: 'body',
+    address: {
+      kind: 'body',
+      sectionIndex: start.sectionIndex,
+      paragraphIndex: start.paragraphIndex,
+      startOffset: start.charOffset,
+      endOffset: end.charOffset,
+    },
   };
 }
 

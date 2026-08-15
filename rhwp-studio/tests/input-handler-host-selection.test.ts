@@ -54,6 +54,13 @@ test('InputHandler는 본문 선택을 시스템 클립보드 없이 호스트�
     text: '선택문',
     signature: 'body:0:2:1|body:0:2:6',
     scope: 'body',
+    address: {
+      kind: 'body',
+      sectionIndex: 0,
+      paragraphIndex: 2,
+      startOffset: 1,
+      endOffset: 6,
+    },
   });
 });
 
@@ -100,6 +107,17 @@ test('InputHandler는 단일 표 셀 선택을 호스트용 텍스트로 읽는�
     text: '셀 선택문',
     signature: 'cell:0:4:1.3.0:2|cell:0:4:1.3.0:5',
     scope: 'cell',
+    address: {
+      kind: 'cell',
+      sectionIndex: 0,
+      parentParagraphIndex: 4,
+      controlIndex: 1,
+      cellIndex: 3,
+      cellParagraphIndex: 0,
+      pathDepth: 1,
+      startOffset: 2,
+      endOffset: 5,
+    },
   });
 });
 

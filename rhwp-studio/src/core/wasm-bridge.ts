@@ -2931,6 +2931,83 @@ export class WasmBridge {
     return JSON.parse((this.doc as any).setFieldValueByName(name, value));
   }
 
+  inspectApprovedTemplate(): Record<string, unknown> {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).inspectApprovedTemplate());
+  }
+
+  preflightApprovedTemplateEdits(request: unknown): Record<string, unknown> {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).preflightApprovedTemplateEdits(JSON.stringify(request)));
+  }
+
+  applyApprovedTemplateEdits(request: unknown, preflightToken: string): Record<string, unknown> {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).applyApprovedTemplateEdits(
+      JSON.stringify(request),
+      preflightToken,
+    ));
+  }
+
+  /**
+   * 현재 편집 문서와 분리된 임시 WASM 인스턴스에서 참고 텍스트를 추출한다.
+   * this.doc, dirty, undo, renderer cache를 읽거나 바꾸지 않는다.
+   */
+  extractReferenceText(
+    data: Uint8Array,
+    fileName: string,
+    options: { maxChars: number; maxPages: number },
+  ): Record<string, unknown> {
+    let referenceDocument: HwpDocument | null = null;
+    try {
+      referenceDocument = new HwpDocument(data);
+      referenceDocument.setFileName(fileName);
+      const format = referenceDocument.getSourceFormat();
+      if (format !== 'hwp' && format !== 'hwpx' && format !== 'hml') {
+        throw new Error(`Unsupported reference document format: ${format}`);
+      }
+      const info: DocumentInfo = JSON.parse(referenceDocument.getDocumentInfo());
+      const pageLimit = Math.min(info.pageCount, options.maxPages);
+      let remaining = options.maxChars;
+      let truncatedByCharacters = false;
+      const pages: Array<{ pageIndex: number; text: string }> = [];
+      for (let pageIndex = 0; pageIndex < pageLimit && remaining > 0; pageIndex += 1) {
+        const pageText = String((referenceDocument as any).getPageText(pageIndex));
+        const text = pageText.length <= remaining ? pageText : pageText.slice(0, remaining);
+        truncatedByCharacters ||= text.length < pageText.length;
+        pages.push({ pageIndex, text });
+        remaining -= text.length;
+      }
+      const warnings: string[] = [];
+      const expectedFormat = fileName.toLowerCase().endsWith('.hwpx')
+        ? 'hwpx'
+        : fileName.toLowerCase().endsWith('.hml') ? 'hml' : 'hwp';
+      if (expectedFormat !== format) warnings.push('format-mismatch');
+      if (info.pageCount > options.maxPages) warnings.push('page-limit');
+      if (truncatedByCharacters || (remaining === 0 && pages.length < pageLimit)) {
+        warnings.push('character-limit');
+      }
+      const validationRaw = (referenceDocument as any).getValidationWarnings?.();
+      if (typeof validationRaw === 'string') {
+        const validation = JSON.parse(validationRaw) as { count?: number };
+        if ((validation.count ?? 0) > 0) warnings.push('document-validation-warnings');
+      }
+      return {
+        schemaVersion: 1,
+        format,
+        pageCount: info.pageCount,
+        extractedPageCount: pages.length,
+        extractedCharCount: options.maxChars - remaining,
+        truncated: warnings.includes('page-limit') || warnings.includes('character-limit'),
+        pages,
+        warnings,
+        isolatedPreview: true,
+      };
+    } finally {
+      referenceDocument?.free();
+    }
+  }
+
   /** 커서 위치의 필드 범위 정보를 조회한다. */
   getFieldInfoAt(pos: DocumentPosition): FieldInfoResult {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');

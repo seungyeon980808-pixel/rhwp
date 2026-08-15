@@ -50,6 +50,26 @@ export interface SelectionSnapshotV1 {
   readonly revision: number;
   readonly text: string;
   readonly scope: 'body' | 'cell';
+  /** inspection 후보와 조인할 구조 주소. pathDepth > 1인 중첩 표는 승인 대상이 아닙니다. */
+  readonly address?:
+    | {
+        readonly kind: 'body';
+        readonly sectionIndex: number;
+        readonly paragraphIndex: number;
+        readonly startOffset: number;
+        readonly endOffset: number;
+      }
+    | {
+        readonly kind: 'cell';
+        readonly sectionIndex: number;
+        readonly parentParagraphIndex: number;
+        readonly controlIndex: number;
+        readonly cellIndex: number;
+        readonly cellParagraphIndex: number;
+        readonly pathDepth: number;
+        readonly startOffset: number;
+        readonly endOffset: number;
+      };
 }
 
 export type ReplaceSelectionResultV1 =
@@ -81,6 +101,158 @@ export type EmbedFillFieldsResultV1 =
   | { readonly ok: true; readonly updated: number }
   | { readonly ok: false; readonly reason: 'unknown-field' | 'unsupported-field' };
 
+export type HistoryUndoResultV1 =
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      readonly reason: 'empty-history' | 'editor-not-ready' | 'undo-failed';
+    };
+
+export interface ApprovedTemplateProtectionV1 {
+  readonly schemaVersion: 1;
+  readonly status: 'standard' | 'protected';
+  readonly pageCount: number;
+  readonly tableCount: number;
+  readonly nestedTableCount: number;
+  readonly pictureCount: number;
+  readonly shapeCount: number;
+  readonly reasons: string[];
+}
+
+export interface ApprovedTemplateInspectionV1 {
+  readonly schemaVersion: 1;
+  readonly format: 'hwp' | 'hwpx' | 'hwp3' | 'hml' | 'drm-protected' | 'empty' | 'unknown';
+  readonly structureDigest: string;
+  readonly pageCount: number;
+  readonly sectionCount: number;
+  readonly paragraphCount: number;
+  readonly topLevelTableCount: number;
+  readonly nestedTableCount: number;
+  readonly pictureCount: number;
+  readonly shapeCount: number;
+  readonly binDataCount: number;
+  readonly protection: ApprovedTemplateProtectionV1;
+  readonly nativeFields: Array<{ fieldId: number; editable: boolean; valueHash: string }>;
+  readonly bodyCandidates: Array<{
+    sectionIndex: number;
+    paragraphIndex: number;
+    textHash: string;
+    adjacentLabelDigest: string;
+  }>;
+  readonly tableCells: Array<{
+    tableIndex: number;
+    row: number;
+    col: number;
+    rowSpan: number;
+    colSpan: number;
+    mergedAnchor: { row: number; col: number };
+    textHash: string;
+    adjacentLabelDigest: string;
+    safe: boolean;
+    blockedReasons: string[];
+    resolvedAddress: {
+      sectionIndex: number;
+      paragraphIndex: number;
+      controlIndex: number;
+      cellIndex: number;
+    };
+  }>;
+  readonly truncated: boolean;
+}
+
+export type ApprovedTemplateEditTargetV1 =
+  | {
+      readonly kind: 'native-field';
+      readonly targetId: string;
+      readonly fieldId: number;
+      readonly expectedValueHash: string;
+      readonly value: string;
+      readonly maxChars: number;
+      readonly maxLines: number;
+    }
+  | {
+      readonly kind: 'body-placeholder';
+      readonly targetId: string;
+      readonly sectionIndex: number;
+      readonly paragraphIndex: number;
+      readonly expectedTextHash: string;
+      readonly adjacentLabelDigest: string;
+      readonly value: string;
+      readonly maxChars: number;
+      readonly maxLines: number;
+    }
+  | {
+      readonly kind: 'table-cell';
+      readonly targetId: string;
+      readonly tableIndex: number;
+      readonly row: number;
+      readonly col: number;
+      readonly expectedTextHash: string;
+      readonly adjacentLabelDigest: string;
+      readonly mergedAnchor: { readonly row: number; readonly col: number };
+      readonly value: string;
+      readonly maxChars: number;
+      readonly maxLines: number;
+      /** v1은 true만 허용하며 셀의 기존 글자/문단 서식을 보존합니다. */
+      readonly keepStyle: true;
+    };
+
+export interface ApprovedTemplateEditRequestV1 {
+  readonly schemaVersion: 1;
+  readonly templateId: string;
+  readonly expectedStructureDigest: string;
+  readonly targets: ApprovedTemplateEditTargetV1[];
+}
+
+export interface ApprovedTemplateEditResultV1 {
+  readonly schemaVersion: 1;
+  readonly ok: boolean;
+  readonly updated: number;
+  readonly changedPages: number[] | null;
+  readonly preflightToken?: string | null;
+  readonly targets?: Array<{
+    targetId: string;
+    originalValue: string;
+    proposedValue: string;
+    changed: boolean;
+  }>;
+  readonly warnings: Array<{ targetId: string | null; code: string }>;
+  readonly overflowTargets: Array<{
+    targetId: string;
+    cellWidthPx: number;
+    textWidthPx: number;
+    lines: number;
+    maxLines: number;
+  }>;
+  readonly rejectedTargets: Array<{ targetId: string; reason: string }>;
+  readonly reason: string | null;
+}
+
+export interface ReferenceTextExtractionOptionsV1 {
+  /** 전체 추출 문자 상한. 기본 100000, 최대 1000000. */
+  maxChars?: number;
+  /** 읽을 페이지 상한. 기본 50, 최대 100. */
+  maxPages?: number;
+}
+
+export interface ReferenceTextExtractionResultV1 {
+  readonly schemaVersion: 1;
+  readonly format: 'hwp' | 'hwpx' | 'hml';
+  readonly pageCount: number;
+  readonly extractedPageCount: number;
+  readonly extractedCharCount: number;
+  readonly truncated: boolean;
+  readonly pages: Array<{ readonly pageIndex: number; readonly text: string }>;
+  readonly warnings: Array<
+    | 'format-mismatch'
+    | 'page-limit'
+    | 'character-limit'
+    | 'document-validation-warnings'
+  >;
+  /** 현재 편집/렌더/undo 상태와 분리된 임시 문서에서 처리됐음을 뜻합니다. */
+  readonly isolatedPreview: true;
+}
+
 export interface HwpVerifyResult {
   /** 직렬화된 HWP 바이트 수 */
   bytesLen: number;
@@ -91,6 +263,16 @@ export interface HwpVerifyResult {
   /** 자기 재로드 성공 여부 */
   recovered: boolean;
 }
+
+export interface RevisionedSaveExportV1 {
+  readonly schemaVersion: 1;
+  readonly bytes: Uint8Array;
+  readonly revision: number;
+}
+
+export type RevisionedNotifySavedResultV1 =
+  | { readonly ok: true; readonly wasDirty: boolean; readonly currentRevision: number }
+  | { readonly ok: false; readonly reason: 'document-changed'; readonly currentRevision: number };
 
 export interface HmlSaveBlocker {
   code: string;
@@ -240,6 +422,13 @@ export declare class RhwpEditor {
    * 스튜디오가 notify-saved-v1 capability를 광고하지 않으면 요청 없이 실패합니다.
    */
   notifySaved(fileName?: string): Promise<{ ok: true; wasDirty: boolean }>;
+  /** 검증된 바이트와 동일 시점의 문서 revision을 원자적으로 캡처합니다. */
+  exportDocumentForSave(format: 'hwp' | 'hwpx' | 'hml'): Promise<RevisionedSaveExportV1>;
+  /** 캡처한 revision 이후 변경이 없을 때만 dirty와 복구 draft를 해제합니다. */
+  notifySavedIfUnchanged(
+    revision: number,
+    fileName?: string,
+  ): Promise<RevisionedNotifySavedResultV1>;
   /** 현재 텍스트 선택을 변경 충돌 검사용 snapshot으로 반환합니다 */
   getSelectionSnapshot(): Promise<SelectionSnapshotV1 | null>;
   /** snapshot이 여전히 유효할 때만 선택 텍스트를 교체합니다 */
@@ -248,6 +437,25 @@ export declare class RhwpEditor {
   getFields(): Promise<EmbedFieldV1[]>;
   /** 필드 값 여러 개를 하나의 실행 취소 단위로 적용합니다 */
   fillFields(entries: EmbedFieldValueV1[]): Promise<EmbedFillFieldsResultV1>;
+  /** 승인 템플릿의 구조 digest와 안전 후보를 원문 없이 조사합니다. */
+  inspectApprovedTemplate(): Promise<ApprovedTemplateInspectionV1>;
+  /** 요청 전체를 문서 변경 없이 사전 검증합니다. */
+  preflightApprovedTemplateEdits(
+    request: ApprovedTemplateEditRequestV1,
+  ): Promise<ApprovedTemplateEditResultV1>;
+  /** preflight token이 여전히 유효할 때 요청 전체를 한 undo 단위로 적용합니다. */
+  applyApprovedTemplateEdits(
+    request: ApprovedTemplateEditRequestV1,
+    preflightToken: string,
+  ): Promise<ApprovedTemplateEditResultV1>;
+  /** Studio 히스토리의 최상위 편집 한 건을 되돌립니다. */
+  undo(): Promise<HistoryUndoResultV1>;
+  /** 별도 임시 문서에서 HWP/HWPX/HML 참고 텍스트를 제한 추출합니다. */
+  extractReferenceText(
+    data: ArrayBuffer | Uint8Array,
+    fileName: string,
+    options?: ReferenceTextExtractionOptionsV1,
+  ): Promise<ReferenceTextExtractionResultV1>;
   /** iframe 엘리먼트를 반환합니다 */
   readonly element: HTMLIFrameElement;
   /** 에디터를 제거합니다 */

@@ -7,6 +7,7 @@ export type HostSelection = {
   readonly text: string;
   readonly signature: string;
   readonly scope: 'body' | 'cell';
+  readonly address?: EmbedSelectionSnapshotV1['address'];
 };
 
 export interface SelectionEditingPort {
@@ -37,6 +38,7 @@ export class SelectionBridge {
       revision: this.revision,
       text: selection.text,
       scope: selection.scope,
+      ...(selection.address ? { address: selection.address } : {}),
     };
     this.active = { snapshot, signature: selection.signature };
     return snapshot;

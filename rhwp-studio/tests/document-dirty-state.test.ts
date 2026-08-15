@@ -101,3 +101,16 @@ test('DocumentDirtyState beforeunload 해제 함수는 설치한 핸들러만 �
   fakeWindow.dispatch('beforeunload', event);
   assert.equal(event.defaultPrevented, false);
 });
+
+test('DocumentDirtyState는 내보내기 revision 이후 변경이 있으면 clean 전환을 거부한다', () => {
+  const state = new DocumentDirtyState(new EventBus());
+  state.markDirty('initial-edit');
+  const exportedRevision = state.revision();
+
+  state.markDirty('edit-during-save');
+
+  assert.equal(state.markCleanIfRevision(exportedRevision, 'host-save'), false);
+  assert.equal(state.isDirty(), true);
+  assert.equal(state.markCleanIfRevision(state.revision(), 'host-save'), true);
+  assert.equal(state.isDirty(), false);
+});

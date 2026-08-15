@@ -1,5 +1,6 @@
 import type { HmlSaveState } from '../core/hml-save-capability.ts';
 import type { DocumentProtectionProfileV1 } from './document-protection-profile.ts';
+import type { EmbedHistoryUndoResultV1 } from './protocol.ts';
 import type {
   CanvasKitRenderModeRequest,
   CanvasKitSurfaceRequest,
@@ -13,12 +14,41 @@ export interface EmbedNotifySavedResult {
   wasDirty: boolean;
 }
 
+export interface EmbedRevisionedSaveExportV1 {
+  readonly schemaVersion: 1;
+  readonly bytes: Uint8Array;
+  readonly revision: number;
+}
+
+export type EmbedRevisionedNotifySavedResultV1 =
+  | { readonly ok: true; readonly wasDirty: boolean; readonly currentRevision: number }
+  | { readonly ok: false; readonly reason: 'document-changed'; readonly currentRevision: number };
+
 export interface EmbedSelectionSnapshotV1 {
   readonly schemaVersion: 1;
   readonly snapshotId: string;
   readonly revision: number;
   readonly text: string;
   readonly scope: 'body' | 'cell';
+  readonly address?:
+    | {
+        readonly kind: 'body';
+        readonly sectionIndex: number;
+        readonly paragraphIndex: number;
+        readonly startOffset: number;
+        readonly endOffset: number;
+      }
+    | {
+        readonly kind: 'cell';
+        readonly sectionIndex: number;
+        readonly parentParagraphIndex: number;
+        readonly controlIndex: number;
+        readonly cellIndex: number;
+        readonly cellParagraphIndex: number;
+        readonly pathDepth: number;
+        readonly startOffset: number;
+        readonly endOffset: number;
+      };
 }
 
 export type EmbedReplaceSelectionResultV1 =
@@ -63,11 +93,18 @@ export interface EmbedRpcHandlers {
   getPageSvg(page: number): Promise<string>;
   exportHwp(): Promise<Uint8Array>;
   exportHwpVerified?(): Promise<Uint8Array>;
+  exportDocumentForSave?(
+    format: 'hwp' | 'hwpx' | 'hml',
+  ): Promise<EmbedRevisionedSaveExportV1>;
   exportHwpx(): Promise<Uint8Array>;
   exportHml(): Promise<Uint8Array>;
   getHmlSaveState(): Promise<HmlSaveState>;
   exportHwpVerify(): Promise<unknown>;
   notifySaved(fileName?: string): Promise<EmbedNotifySavedResult>;
+  notifySavedIfUnchanged?(
+    revision: number,
+    fileName?: string,
+  ): Promise<EmbedRevisionedNotifySavedResultV1>;
   getSelectionSnapshot?(): Promise<EmbedSelectionSnapshotV1 | null>;
   replaceSelection?(
     snapshotId: string,
@@ -75,6 +112,18 @@ export interface EmbedRpcHandlers {
   ): Promise<EmbedReplaceSelectionResultV1>;
   getFields?(): Promise<EmbedFieldV1[]>;
   fillFields?(entries: EmbedFieldValueV1[]): Promise<EmbedFillFieldsResultV1>;
+  inspectApprovedTemplate?(): Promise<Record<string, unknown>>;
+  preflightApprovedTemplateEdits?(request: Record<string, unknown>): Promise<Record<string, unknown>>;
+  applyApprovedTemplateEdits?(
+    request: Record<string, unknown>,
+    preflightToken: string,
+  ): Promise<Record<string, unknown>>;
+  extractReferenceText?(
+    data: Uint8Array,
+    fileName: string,
+    options: { maxChars: number; maxPages: number },
+  ): Promise<Record<string, unknown>>;
+  undo?(): Promise<EmbedHistoryUndoResultV1>;
 }
 
 export interface EmbedRendererDiagnosticsV1 {
@@ -104,6 +153,21 @@ function asBytes(value: unknown, allowLegacyArray: boolean): Uint8Array {
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
   if (allowLegacyArray && Array.isArray(value)) return new Uint8Array(value);
   throw new Error('loadFile requires binary data');
+}
+
+function asApprovedTemplateRequest(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('request must be an object');
+  }
+  const request = value as Record<string, unknown>;
+  if (request.schemaVersion !== 1 || !Array.isArray(request.targets)
+      || request.targets.length < 1 || request.targets.length > 100) {
+    throw new Error('approved template request must use schemaVersion 1 and 1..100 targets');
+  }
+  if (JSON.stringify(request).length > 1_000_000) {
+    throw new Error('approved template request is too large');
+  }
+  return request;
 }
 
 export async function routeEmbedRequest(
@@ -140,6 +204,15 @@ export async function routeEmbedRequest(
       }
       return handlers.exportHwpVerified();
     }
+    case 'exportDocumentForSave': {
+      if (!handlers.exportDocumentForSave) {
+        throw new Error('Revisioned save v1 is not supported');
+      }
+      if (Object.keys(params).length !== 1 || !['hwp', 'hwpx', 'hml'].includes(String(params.format))) {
+        throw new Error('format must be hwp, hwpx, or hml');
+      }
+      return handlers.exportDocumentForSave(params.format as 'hwp' | 'hwpx' | 'hml');
+    }
     case 'exportHwpx': return handlers.exportHwpx();
     case 'exportHml': return handlers.exportHml();
     case 'getHmlSaveState': return handlers.getHmlSaveState();
@@ -149,6 +222,31 @@ export async function routeEmbedRequest(
         ? params.fileName
         : undefined,
     );
+    case 'notifySavedIfUnchanged': {
+      if (!handlers.notifySavedIfUnchanged) {
+        throw new Error('Revisioned save v1 is not supported');
+      }
+      const allowedKeys = new Set(['revision', 'fileName']);
+      if (Object.keys(params).some((key) => !allowedKeys.has(key))) {
+        throw new Error('notifySavedIfUnchanged accepts only revision and fileName');
+      }
+      if (!Number.isSafeInteger(params.revision) || (params.revision as number) < 0) {
+        throw new Error('revision must be a non-negative safe integer');
+      }
+      return handlers.notifySavedIfUnchanged(
+        params.revision as number,
+        typeof params.fileName === 'string' && params.fileName.length > 0
+          ? params.fileName
+          : undefined,
+      );
+    }
+    case 'undo': {
+      if (!handlers.undo) throw new Error('History undo v1 is not supported');
+      if (Object.keys(params).length !== 0) {
+        throw new Error('undo does not accept parameters');
+      }
+      return handlers.undo();
+    }
     case 'getSelectionSnapshot': {
       if (!handlers.getSelectionSnapshot) {
         throw new Error('Selection edit v1 is not supported');
@@ -189,6 +287,64 @@ export async function routeEmbedRequest(
         return { fieldId: value.fieldId as number, value: value.value };
       });
       return handlers.fillFields(entries);
+    }
+    case 'inspectApprovedTemplate': {
+      if (!handlers.inspectApprovedTemplate) {
+        throw new Error('Approved template edit v1 is not supported');
+      }
+      return handlers.inspectApprovedTemplate();
+    }
+    case 'preflightApprovedTemplateEdits': {
+      if (!handlers.preflightApprovedTemplateEdits) {
+        throw new Error('Approved template edit v1 is not supported');
+      }
+      return handlers.preflightApprovedTemplateEdits(asApprovedTemplateRequest(params.request));
+    }
+    case 'applyApprovedTemplateEdits': {
+      if (!handlers.applyApprovedTemplateEdits) {
+        throw new Error('Approved template edit v1 is not supported');
+      }
+      const preflightToken = params.preflightToken;
+      if (typeof preflightToken !== 'string'
+          || !/^sha256:[0-9a-f]{64}$/u.test(preflightToken)) {
+        throw new Error('preflightToken must be a sha256 digest');
+      }
+      return handlers.applyApprovedTemplateEdits(
+        asApprovedTemplateRequest(params.request),
+        preflightToken,
+      );
+    }
+    case 'extractReferenceText': {
+      if (!handlers.extractReferenceText) {
+        throw new Error('Reference text extract v1 is not supported');
+      }
+      const data = asBytes(params.data, allowLegacyArray);
+      if (data.byteLength < 1 || data.byteLength > 50 * 1024 * 1024) {
+        throw new Error('reference data must be between 1 byte and 50 MiB');
+      }
+      const fileName = params.fileName;
+      if (typeof fileName !== 'string' || fileName.length > 255
+          || /[\\/]/u.test(fileName) || !/\.(?:hwp|hwpx|hml)$/iu.test(fileName)) {
+        throw new Error('fileName must be a basename ending in hwp, hwpx, or hml');
+      }
+      const options = asParams(params.options);
+      if (Object.keys(options).some((key) => key !== 'maxChars' && key !== 'maxPages')) {
+        throw new Error('reference extraction options contain unknown keys');
+      }
+      const maxChars = options.maxChars ?? 100_000;
+      const maxPages = options.maxPages ?? 50;
+      if (!Number.isSafeInteger(maxChars) || (maxChars as number) < 1
+          || (maxChars as number) > 1_000_000) {
+        throw new Error('maxChars must be an integer between 1 and 1000000');
+      }
+      if (!Number.isSafeInteger(maxPages) || (maxPages as number) < 1
+          || (maxPages as number) > 100) {
+        throw new Error('maxPages must be an integer between 1 and 100');
+      }
+      return handlers.extractReferenceText(data, fileName, {
+        maxChars: maxChars as number,
+        maxPages: maxPages as number,
+      });
     }
     default: throw new Error(`Unknown method: ${method}`);
   }

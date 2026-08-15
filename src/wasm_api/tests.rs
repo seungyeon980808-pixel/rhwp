@@ -11,6 +11,605 @@ fn test_create_empty_document() {
     assert_eq!(doc.page_count(), 1);
 }
 
+#[test]
+fn approved_template_table_cell_preflight_and_atomic_apply() {
+    let mut doc = create_doc_with_table();
+    let inspection: serde_json::Value =
+        serde_json::from_str(&doc.inspect_approved_template_json()).expect("inspection json");
+    assert_eq!(inspection["protection"]["status"], "standard");
+    let cell = &inspection["tableCells"][0];
+    assert_eq!(cell["safe"], true);
+    let request = serde_json::json!({
+        "schemaVersion": 1,
+        "templateId": "unit-table",
+        "expectedStructureDigest": inspection["structureDigest"],
+        "targets": [{
+            "kind": "table-cell",
+            "targetId": "student-name",
+            "tableIndex": cell["tableIndex"],
+            "row": cell["row"],
+            "col": cell["col"],
+            "expectedTextHash": cell["textHash"],
+            "adjacentLabelDigest": cell["adjacentLabelDigest"],
+            "mergedAnchor": cell["mergedAnchor"],
+            "value": "김하늘",
+            "maxChars": 20,
+            "maxLines": 1,
+            "keepStyle": true
+        }]
+    });
+    let preflight: serde_json::Value = serde_json::from_str(
+        &doc.preflight_approved_template_edits_native(&request.to_string())
+            .expect("preflight"),
+    )
+    .expect("preflight json");
+    assert_eq!(preflight["ok"], true, "{preflight}");
+    let token = preflight["preflightToken"].as_str().expect("token");
+
+    let applied: serde_json::Value = serde_json::from_str(
+        &doc.apply_approved_template_edits_native(&request.to_string(), token)
+            .expect("apply"),
+    )
+    .expect("apply json");
+    assert_eq!(applied["ok"], true, "{applied}");
+    assert_eq!(applied["updated"], 1, "{applied}");
+    assert!(
+        applied["changedPages"].as_array().is_some(),
+        "changedPages must be an array: {applied}"
+    );
+
+    let Control::Table(table) = &doc.document().sections[0].paragraphs[0].controls[0] else {
+        panic!("table");
+    };
+    assert_eq!(table.cells[0].paragraphs[0].text, "김하늘");
+
+    let reapplied: serde_json::Value = serde_json::from_str(
+        &doc.apply_approved_template_edits_native(&request.to_string(), token)
+            .expect("idempotent reapply"),
+    )
+    .expect("reapply json");
+    assert_eq!(reapplied["ok"], true, "{reapplied}");
+    assert_eq!(reapplied["updated"], 0, "{reapplied}");
+    assert_eq!(reapplied["changedPages"], serde_json::json!([]));
+
+    let Control::Table(table) = &mut doc.document_mut().sections[0].paragraphs[0].controls[0]
+    else {
+        panic!("table");
+    };
+    table.cells[0].width = table.cells[0].width.saturating_add(1);
+    let mismatch: serde_json::Value = serde_json::from_str(
+        &doc.preflight_approved_template_edits_native(&request.to_string())
+            .expect("structure mismatch"),
+    )
+    .expect("mismatch json");
+    assert!(
+        mismatch["rejectedTargets"]
+            .as_array()
+            .expect("rejected")
+            .iter()
+            .any(|entry| entry["reason"] == "structure-mismatch"),
+        "{mismatch}"
+    );
+}
+
+#[test]
+fn approved_template_rejects_multiple_cells_and_confirmed_overflow_without_mutation() {
+    let mut doc = create_doc_with_table();
+    let inspection: serde_json::Value =
+        serde_json::from_str(&doc.inspect_approved_template_json()).expect("inspection json");
+    let before = doc.document().sections[0].paragraphs[0].clone();
+    let cells = inspection["tableCells"].as_array().expect("cells");
+    let targets: Vec<_> = cells
+        .iter()
+        .take(2)
+        .enumerate()
+        .map(|(index, cell)| {
+            serde_json::json!({
+                "kind": "table-cell",
+                "targetId": format!("cell-{index}"),
+                "tableIndex": cell["tableIndex"],
+                "row": cell["row"],
+                "col": cell["col"],
+                "expectedTextHash": cell["textHash"],
+                "adjacentLabelDigest": cell["adjacentLabelDigest"],
+                "mergedAnchor": cell["mergedAnchor"],
+                "value": "바꾸면안됨",
+                "maxChars": 20,
+                "maxLines": 1,
+                "keepStyle": true
+            })
+        })
+        .collect();
+    let multiple = serde_json::json!({
+        "schemaVersion": 1,
+        "templateId": "unit-atomic",
+        "expectedStructureDigest": inspection["structureDigest"],
+        "targets": targets
+    });
+    let rejected: serde_json::Value = serde_json::from_str(
+        &doc.apply_approved_template_edits_native(
+            &multiple.to_string(),
+            &format!("sha256:{}", "0".repeat(64)),
+        )
+        .expect("apply reject"),
+    )
+    .expect("reject json");
+    assert_eq!(rejected["ok"], false, "{rejected}");
+    assert_eq!(
+        doc.document().sections[0].paragraphs[0].text,
+        before.text,
+        "host paragraph must remain unchanged"
+    );
+    let Control::Table(current) = &doc.document().sections[0].paragraphs[0].controls[0] else {
+        panic!("table");
+    };
+    let Control::Table(original) = &before.controls[0] else {
+        panic!("original table");
+    };
+    assert_eq!(
+        current.cells[0].paragraphs[0].text,
+        original.cells[0].paragraphs[0].text
+    );
+
+    let cell = &inspection["tableCells"][0];
+    let overflow = serde_json::json!({
+        "schemaVersion": 1,
+        "templateId": "unit-overflow",
+        "expectedStructureDigest": inspection["structureDigest"],
+        "targets": [{
+            "kind": "table-cell",
+            "targetId": "too-long",
+            "tableIndex": cell["tableIndex"],
+            "row": cell["row"],
+            "col": cell["col"],
+            "expectedTextHash": cell["textHash"],
+            "adjacentLabelDigest": cell["adjacentLabelDigest"],
+            "mergedAnchor": cell["mergedAnchor"],
+            "value": "가".repeat(200),
+            "maxChars": 500,
+            "maxLines": 1,
+            "keepStyle": true
+        }]
+    });
+    let overflow_result: serde_json::Value = serde_json::from_str(
+        &doc.preflight_approved_template_edits_native(&overflow.to_string())
+            .expect("overflow preflight"),
+    )
+    .expect("overflow json");
+    assert_eq!(overflow_result["ok"], false, "{overflow_result}");
+    assert!(overflow_result["rejectedTargets"]
+        .as_array()
+        .expect("rejected")
+        .iter()
+        .any(|entry| entry["reason"] == "confirmed-overflow"));
+}
+
+#[test]
+fn approved_template_wrap_estimator_sums_each_explicit_line() {
+    let doc = create_doc_with_table();
+    let first_wrapping_length = (1..500)
+        .find(|length| {
+            crate::document_core::approved_template::measure_cell_overflow(
+                &doc,
+                0,
+                0,
+                0,
+                0,
+                &"가".repeat(*length),
+            )
+            .is_some()
+        })
+        .expect("synthetic cell must eventually wrap");
+    let line = "가".repeat(first_wrapping_length);
+    let (_, _, lines) = crate::document_core::approved_template::measure_cell_overflow(
+        &doc,
+        0,
+        0,
+        0,
+        0,
+        &format!("{line}\n{line}"),
+    )
+    .expect("both explicit lines wrap");
+
+    assert_eq!(lines, 4, "each explicit line needs two rendered lines");
+}
+
+#[test]
+fn approved_template_blocks_covered_and_picture_cells() {
+    let mut covered = create_doc_with_table();
+    let Control::Table(table) = &mut covered.document_mut().sections[0].paragraphs[0].controls[0]
+    else {
+        panic!("table");
+    };
+    table.cells[0].col_span = 2;
+    table.cells.retain(|cell| !(cell.row == 0 && cell.col == 1));
+    let inspection: serde_json::Value =
+        serde_json::from_str(&covered.inspect_approved_template_json()).expect("inspection");
+    let request = serde_json::json!({
+        "schemaVersion": 1,
+        "templateId": "covered",
+        "expectedStructureDigest": inspection["structureDigest"],
+        "targets": [{
+            "kind": "table-cell", "targetId": "covered-cell",
+            "tableIndex": 0, "row": 0, "col": 1,
+            "expectedTextHash": format!("sha256:{}", "0".repeat(64)),
+            "adjacentLabelDigest": format!("sha256:{}", "0".repeat(64)),
+            "mergedAnchor": {"row": 0, "col": 1},
+            "value": "X", "maxChars": 10, "maxLines": 1, "keepStyle": true
+        }]
+    });
+    let result: serde_json::Value = serde_json::from_str(
+        &covered
+            .preflight_approved_template_edits_native(&request.to_string())
+            .expect("preflight"),
+    )
+    .expect("json");
+    assert!(
+        result["rejectedTargets"]
+            .as_array()
+            .expect("rejected")
+            .iter()
+            .any(|entry| entry["reason"] == "covered-merged-cell"),
+        "{result}"
+    );
+
+    let mut picture = create_doc_with_table();
+    let Control::Table(table) = &mut picture.document_mut().sections[0].paragraphs[0].controls[0]
+    else {
+        panic!("table");
+    };
+    table.cells[0].paragraphs[0]
+        .controls
+        .push(Control::Picture(Box::default()));
+    let inspection: serde_json::Value =
+        serde_json::from_str(&picture.inspect_approved_template_json()).expect("inspection");
+    let cell = &inspection["tableCells"][0];
+    assert_eq!(cell["safe"], false);
+    let picture_request = serde_json::json!({
+        "schemaVersion": 1,
+        "templateId": "picture-cell",
+        "expectedStructureDigest": inspection["structureDigest"],
+        "targets": [{
+            "kind": "table-cell", "targetId": "picture-cell",
+            "tableIndex": cell["tableIndex"], "row": cell["row"], "col": cell["col"],
+            "expectedTextHash": cell["textHash"],
+            "adjacentLabelDigest": cell["adjacentLabelDigest"],
+            "mergedAnchor": cell["mergedAnchor"],
+            "value": "X", "maxChars": 10, "maxLines": 1, "keepStyle": true
+        }]
+    });
+    let picture_result: serde_json::Value = serde_json::from_str(
+        &picture
+            .preflight_approved_template_edits_native(&picture_request.to_string())
+            .expect("picture preflight"),
+    )
+    .expect("picture json");
+    assert!(
+        picture_result["rejectedTargets"]
+            .as_array()
+            .expect("rejected")
+            .iter()
+            .any(|entry| entry["reason"] == "mixed-cell-content"),
+        "{picture_result}"
+    );
+
+    let mut nested = create_doc_with_table();
+    let Control::Table(table) = &mut nested.document_mut().sections[0].paragraphs[0].controls[0]
+    else {
+        panic!("table");
+    };
+    table.cells[0].paragraphs[0]
+        .controls
+        .push(Control::Table(Box::new(Default::default())));
+    let nested_inspection: serde_json::Value =
+        serde_json::from_str(&nested.inspect_approved_template_json()).expect("nested inspection");
+    assert_eq!(nested_inspection["protection"]["status"], "protected");
+    assert_eq!(nested_inspection["protection"]["nestedTableCount"], 1);
+}
+
+#[test]
+fn approved_template_body_placeholder_keeps_structure_digest() {
+    let mut doc = HwpDocument::create_empty();
+    doc.insert_text_native(0, 0, 0, "[학생명]")
+        .expect("placeholder");
+    let inspection: serde_json::Value =
+        serde_json::from_str(&doc.inspect_approved_template_json()).expect("inspection");
+    let body = inspection["bodyCandidates"]
+        .as_array()
+        .expect("body")
+        .first()
+        .expect("candidate");
+    let request = serde_json::json!({
+        "schemaVersion": 1,
+        "templateId": "body",
+        "expectedStructureDigest": inspection["structureDigest"],
+        "targets": [{
+            "kind": "body-placeholder", "targetId": "student-name",
+            "sectionIndex": body["sectionIndex"], "paragraphIndex": body["paragraphIndex"],
+            "expectedTextHash": body["textHash"],
+            "adjacentLabelDigest": body["adjacentLabelDigest"],
+            "value": "김하늘", "maxChars": 20, "maxLines": 1
+        }]
+    });
+    let preflight: serde_json::Value = serde_json::from_str(
+        &doc.preflight_approved_template_edits_native(&request.to_string())
+            .expect("preflight"),
+    )
+    .expect("json");
+    let token = preflight["preflightToken"].as_str().expect("token");
+    let result: serde_json::Value = serde_json::from_str(
+        &doc.apply_approved_template_edits_native(&request.to_string(), token)
+            .expect("apply"),
+    )
+    .expect("json");
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(doc.document().sections[0].paragraphs[0].text, "김하늘");
+    let after: serde_json::Value =
+        serde_json::from_str(&doc.inspect_approved_template_json()).expect("after inspection");
+    assert_eq!(inspection["structureDigest"], after["structureDigest"]);
+}
+
+#[test]
+fn approved_template_body_adjacent_label_change_is_rejected_without_structure_drift() {
+    let mut doc = HwpDocument::create_empty();
+    doc.insert_text_native(0, 0, 0, "[학생명]")
+        .expect("placeholder");
+    doc.document_mut().sections[0].paragraphs.push(Paragraph {
+        text: "학생 이름".to_string(),
+        ..Paragraph::default()
+    });
+    let inspection: serde_json::Value =
+        serde_json::from_str(&doc.inspect_approved_template_json()).expect("inspection");
+    let body = inspection["bodyCandidates"]
+        .as_array()
+        .expect("body candidates")
+        .iter()
+        .find(|candidate| candidate["paragraphIndex"] == 0)
+        .expect("placeholder candidate");
+    assert!(
+        body["adjacentLabelDigest"]
+            .as_str()
+            .is_some_and(|digest| digest.starts_with("sha256:")),
+        "inspection must expose a body-local adjacent label digest: {body}"
+    );
+    let request = serde_json::json!({
+        "schemaVersion": 1,
+        "templateId": "body-label",
+        "expectedStructureDigest": inspection["structureDigest"],
+        "targets": [{
+            "kind": "body-placeholder", "targetId": "student-name",
+            "sectionIndex": body["sectionIndex"], "paragraphIndex": body["paragraphIndex"],
+            "expectedTextHash": body["textHash"],
+            "adjacentLabelDigest": body["adjacentLabelDigest"],
+            "value": "김하늘", "maxChars": 20, "maxLines": 1
+        }]
+    });
+
+    doc.document_mut().sections[0].paragraphs[1].text = "학생 성명".to_string();
+    let changed: serde_json::Value =
+        serde_json::from_str(&doc.inspect_approved_template_json()).expect("changed inspection");
+    assert_eq!(inspection["structureDigest"], changed["structureDigest"]);
+    let result: serde_json::Value = serde_json::from_str(
+        &doc.preflight_approved_template_edits_native(&request.to_string())
+            .expect("preflight"),
+    )
+    .expect("result");
+    assert!(
+        result["rejectedTargets"]
+            .as_array()
+            .expect("rejected")
+            .iter()
+            .any(|entry| entry["reason"] == "adjacent-label-mismatch"),
+        "{result}"
+    );
+}
+
+#[test]
+fn approved_template_explicit_lines_obey_max_lines_for_every_target_kind() {
+    let mut native = HwpDocument::create_empty();
+    native.insert_text_native(0, 0, 0, "A").expect("seed");
+    native
+        .insert_click_here_field_at(0, 0, 0, "이름", "", "student", true)
+        .expect("field");
+    let native_inspection: serde_json::Value =
+        serde_json::from_str(&native.inspect_approved_template_json()).expect("native inspection");
+    let field = &native_inspection["nativeFields"][0];
+    let native_request = serde_json::json!({
+        "schemaVersion": 1, "templateId": "native-lines",
+        "expectedStructureDigest": native_inspection["structureDigest"],
+        "targets": [{
+            "kind": "native-field", "targetId": "native",
+            "fieldId": field["fieldId"], "expectedValueHash": field["valueHash"],
+            "value": "가\n나", "maxChars": 20, "maxLines": 1
+        }]
+    });
+    let native_result: serde_json::Value = serde_json::from_str(
+        &native
+            .preflight_approved_template_edits_native(&native_request.to_string())
+            .expect("native preflight"),
+    )
+    .expect("native result");
+    assert!(native_result["rejectedTargets"]
+        .as_array()
+        .expect("native rejected")
+        .iter()
+        .any(|entry| entry["reason"] == "max-lines-exceeded"));
+
+    let mut body = HwpDocument::create_empty();
+    body.insert_text_native(0, 0, 0, "[이름]")
+        .expect("body placeholder");
+    let body_inspection: serde_json::Value =
+        serde_json::from_str(&body.inspect_approved_template_json()).expect("body inspection");
+    let candidate = &body_inspection["bodyCandidates"][0];
+    let body_request = serde_json::json!({
+        "schemaVersion": 1, "templateId": "body-lines",
+        "expectedStructureDigest": body_inspection["structureDigest"],
+        "targets": [{
+            "kind": "body-placeholder", "targetId": "body",
+            "sectionIndex": candidate["sectionIndex"], "paragraphIndex": candidate["paragraphIndex"],
+            "expectedTextHash": candidate["textHash"],
+            "adjacentLabelDigest": candidate["adjacentLabelDigest"],
+            "value": "가\n나", "maxChars": 20, "maxLines": 1
+        }]
+    });
+    let body_result: serde_json::Value = serde_json::from_str(
+        &body
+            .preflight_approved_template_edits_native(&body_request.to_string())
+            .expect("body preflight"),
+    )
+    .expect("body result");
+    assert!(body_result["rejectedTargets"]
+        .as_array()
+        .expect("body rejected")
+        .iter()
+        .any(|entry| entry["reason"] == "max-lines-exceeded"));
+
+    let mut table = create_doc_with_table();
+    let table_inspection: serde_json::Value =
+        serde_json::from_str(&table.inspect_approved_template_json()).expect("table inspection");
+    let cell = &table_inspection["tableCells"][0];
+    let table_request = serde_json::json!({
+        "schemaVersion": 1, "templateId": "table-lines",
+        "expectedStructureDigest": table_inspection["structureDigest"],
+        "targets": [{
+            "kind": "table-cell", "targetId": "cell",
+            "tableIndex": cell["tableIndex"], "row": cell["row"], "col": cell["col"],
+            "expectedTextHash": cell["textHash"],
+            "adjacentLabelDigest": cell["adjacentLabelDigest"],
+            "mergedAnchor": cell["mergedAnchor"],
+            "value": "A\nB", "maxChars": 20, "maxLines": 1, "keepStyle": true
+        }]
+    });
+    let table_result: serde_json::Value = serde_json::from_str(
+        &table
+            .preflight_approved_template_edits_native(&table_request.to_string())
+            .expect("table preflight"),
+    )
+    .expect("table result");
+    assert!(table_result["rejectedTargets"]
+        .as_array()
+        .expect("table rejected")
+        .iter()
+        .any(|entry| entry["reason"] == "max-lines-exceeded"));
+}
+
+#[test]
+fn approved_template_native_fields_apply_as_one_validated_batch() {
+    let mut doc = HwpDocument::create_empty();
+    doc.insert_text_native(0, 0, 0, "AB").expect("seed text");
+    doc.insert_click_here_field_at(0, 0, 0, "이름", "", "student", true)
+        .expect("field one");
+    doc.insert_click_here_field_at(0, 0, 1, "학급", "", "class", true)
+        .expect("field two");
+    let inspection: serde_json::Value =
+        serde_json::from_str(&doc.inspect_approved_template_json()).expect("inspection");
+    let fields = inspection["nativeFields"]
+        .as_array()
+        .expect("native fields");
+    assert_eq!(fields.len(), 2);
+    let targets: Vec<_> = fields
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            serde_json::json!({
+                "kind": "native-field",
+                "targetId": format!("field-{index}"),
+                "fieldId": field["fieldId"],
+                "expectedValueHash": field["valueHash"],
+                "value": if index == 0 { "김하늘" } else { "2학년 3반" },
+                "maxChars": 20, "maxLines": 1
+            })
+        })
+        .collect();
+    let request = serde_json::json!({
+        "schemaVersion": 1,
+        "templateId": "native-fields",
+        "expectedStructureDigest": inspection["structureDigest"],
+        "targets": targets
+    });
+    let preflight: serde_json::Value = serde_json::from_str(
+        &doc.preflight_approved_template_edits_native(&request.to_string())
+            .expect("preflight"),
+    )
+    .expect("json");
+    assert_eq!(preflight["ok"], true, "{preflight}");
+    let token = preflight["preflightToken"].as_str().expect("token");
+    let applied: serde_json::Value = serde_json::from_str(
+        &doc.apply_approved_template_edits_native(&request.to_string(), token)
+            .expect("apply"),
+    )
+    .expect("json");
+    assert_eq!(applied["updated"], 2, "{applied}");
+    let values: Vec<_> = doc
+        .collect_all_fields()
+        .into_iter()
+        .map(|field| field.value)
+        .collect();
+    assert!(values.contains(&"김하늘".to_string()), "{values:?}");
+    assert!(values.contains(&"2학년 3반".to_string()), "{values:?}");
+}
+
+#[test]
+fn approved_template_native_batch_rejects_partial_failure_and_duplicate_address() {
+    let mut doc = HwpDocument::create_empty();
+    doc.insert_text_native(0, 0, 0, "A").expect("seed text");
+    doc.insert_click_here_field_at(0, 0, 0, "이름", "", "student", true)
+        .expect("field");
+    let inspection: serde_json::Value =
+        serde_json::from_str(&doc.inspect_approved_template_json()).expect("inspection");
+    let field = &inspection["nativeFields"][0];
+    let valid = serde_json::json!({
+        "kind": "native-field", "targetId": "valid",
+        "fieldId": field["fieldId"], "expectedValueHash": field["valueHash"],
+        "value": "김하늘", "maxChars": 20, "maxLines": 1
+    });
+    let request = serde_json::json!({
+        "schemaVersion": 1, "templateId": "partial-native",
+        "expectedStructureDigest": inspection["structureDigest"],
+        "targets": [valid.clone(), {
+            "kind": "native-field", "targetId": "unknown",
+            "fieldId": u32::MAX, "expectedValueHash": field["valueHash"],
+            "value": "절대적용안됨", "maxChars": 20, "maxLines": 1
+        }]
+    });
+    let result: serde_json::Value = serde_json::from_str(
+        &doc.apply_approved_template_edits_native(
+            &request.to_string(),
+            &format!("sha256:{}", "0".repeat(64)),
+        )
+        .expect("atomic reject"),
+    )
+    .expect("result json");
+    assert_eq!(result["ok"], false, "{result}");
+    assert!(doc
+        .collect_all_fields()
+        .into_iter()
+        .all(|current| current.value.is_empty()));
+
+    let duplicate = serde_json::json!({
+        "schemaVersion": 1, "templateId": "duplicate-native",
+        "expectedStructureDigest": inspection["structureDigest"],
+        "targets": [valid, {
+            "kind": "native-field", "targetId": "same-field",
+            "fieldId": field["fieldId"], "expectedValueHash": field["valueHash"],
+            "value": "다른값", "maxChars": 20, "maxLines": 1
+        }]
+    });
+    let duplicate_result: serde_json::Value = serde_json::from_str(
+        &doc.preflight_approved_template_edits_native(&duplicate.to_string())
+            .expect("duplicate preflight"),
+    )
+    .expect("duplicate json");
+    assert!(
+        duplicate_result["rejectedTargets"]
+            .as_array()
+            .expect("rejected")
+            .iter()
+            .any(|entry| entry["reason"] == "duplicate-target-address"),
+        "{duplicate_result}"
+    );
+}
+
 /// [#1386] createEmpty는 구역 1개 + 빈 문단 1개를 포함해 생성 직후
 /// 편집/조회/내보내기가 가능해야 한다 (구역 0개 → 모든 API 실패 회귀 방지).
 #[test]

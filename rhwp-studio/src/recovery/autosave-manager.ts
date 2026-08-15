@@ -204,10 +204,10 @@ export class AutosaveManager {
         return;
       }
       this.lastSavedAt = savedAt;
-      this.logger.debug?.(`[autosave] draft saved: ${current.fileName} (${bytes.byteLength} bytes)`);
+      this.logger.debug?.('[autosave] draft saved', { byteLength: bytes.byteLength });
       this.onStatus?.({ state: 'saved', reason, byteLength: bytes.byteLength });
     } catch (error) {
-      this.logger.warn('[autosave] draft save failed:', error);
+      this.logger.warn('[autosave] draft save failed');
       this.onStatus?.({ state: 'error', reason, error });
     } finally {
       this.saving = false;
@@ -254,9 +254,9 @@ export class AutosaveManager {
   private async deleteDraft(id: string, reason: string): Promise<void> {
     try {
       await this.store.deleteDraft(id);
-      this.logger.debug?.(`[autosave] draft deleted: ${id} (${reason})`);
-    } catch (error) {
-      this.logger.warn('[autosave] draft delete failed:', error);
+      this.logger.debug?.('[autosave] draft deleted');
+    } catch {
+      this.logger.warn('[autosave] draft delete failed');
     }
   }
 }

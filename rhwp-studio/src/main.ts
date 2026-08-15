@@ -94,6 +94,22 @@ async function completeHostSave(fileName?: string): Promise<{ ok: true; wasDirty
   return { ok: true, wasDirty };
 }
 
+async function completeHostSaveIfUnchanged(
+  revision: number,
+  fileName?: string,
+): Promise<
+  | { ok: true; wasDirty: boolean; currentRevision: number }
+  | { ok: false; reason: 'document-changed'; currentRevision: number }
+> {
+  const wasDirty = documentState.isDirty();
+  if (!documentState.markCleanIfRevision(revision, 'host-save')) {
+    return { ok: false, reason: 'document-changed', currentRevision: documentState.revision() };
+  }
+  if (fileName) wasm.fileName = fileName;
+  await autosaveManager.discardCurrentDraft('host-save');
+  return { ok: true, wasDirty, currentRevision: documentState.revision() };
+}
+
 // 호스트 통합용 공개 API — 팝업/포크 등 SDK 없이 스튜디오 페이지 안에서 통합하는
 // 호스트를 위해 프로덕션 빌드에도 항상 노출한다 (iframe 호스트는 embed RPC 사용).
 (window as any).rhwpStudio = {
@@ -1235,8 +1251,8 @@ async function offerAutosaveRecoveryIfIdle(): Promise<void> {
     } catch (error) {
       showLoadErrorUnlessCancelled(error);
     }
-  } catch (error) {
-    console.warn('[autosave] 복구 후보 확인 실패:', error);
+  } catch {
+    console.warn('[autosave] 복구 후보 확인 실패');
   }
 }
 
@@ -1499,6 +1515,15 @@ installEmbedRuntime({
       await initPromise;
       return wasm.exportHwpVerified();
     },
+    async exportDocumentForSave(format) {
+      await initPromise;
+      const bytes = format === 'hwp'
+        ? wasm.exportHwpVerified()
+        : format === 'hwpx'
+          ? wasm.exportHwpx()
+          : wasm.exportHml();
+      return { schemaVersion: 1, bytes, revision: documentState.revision() };
+    },
     async exportHwpx() {
       await initPromise;
       return wasm.exportHwpx();
@@ -1518,6 +1543,15 @@ installEmbedRuntime({
     async notifySaved(fileName) {
       await initPromise;
       return completeHostSave(fileName);
+    },
+    async notifySavedIfUnchanged(revision, fileName) {
+      await initPromise;
+      return completeHostSaveIfUnchanged(revision, fileName);
+    },
+    async undo() {
+      await initPromise;
+      if (!inputHandler) return { ok: false, reason: 'editor-not-ready' };
+      return inputHandler.undoFromHost();
     },
     async getSelectionSnapshot() {
       await initPromise;
@@ -1543,6 +1577,34 @@ installEmbedRuntime({
       await initPromise;
       if (!inputHandler) return { ok: false, reason: 'unsupported-field' };
       return inputHandler.fillFieldsFromHost(entries);
+    },
+    async inspectApprovedTemplate() {
+      await initPromise;
+      return wasm.inspectApprovedTemplate();
+    },
+    async preflightApprovedTemplateEdits(request) {
+      await initPromise;
+      return wasm.preflightApprovedTemplateEdits(request);
+    },
+    async applyApprovedTemplateEdits(request, preflightToken) {
+      await initPromise;
+      if (!inputHandler) {
+        return {
+          schemaVersion: 1,
+          ok: false,
+          updated: 0,
+          changedPages: [],
+          warnings: [],
+          overflowTargets: [],
+          rejectedTargets: [],
+          reason: 'editor-not-ready',
+        };
+      }
+      return inputHandler.applyApprovedTemplateEditsFromHost(request, preflightToken);
+    },
+    async extractReferenceText(data, fileName, options) {
+      await initPromise;
+      return wasm.extractReferenceText(data, fileName, options);
     },
   },
 });

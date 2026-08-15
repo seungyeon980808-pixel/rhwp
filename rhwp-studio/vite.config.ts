@@ -81,7 +81,21 @@ function windowsFontSymlinkFallbackPlugin() {
   };
 }
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  build: command === 'build' ? {
+    rolldownOptions: {
+      output: {
+        minify: {
+          compress: {
+            dropConsole: true,
+            dropDebugger: true,
+          },
+          mangle: true,
+          codegen: true,
+        },
+      },
+    },
+  } : undefined,
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     // 셀프 호스팅 빌드에서 외부(CDN) 웹폰트 로드를 빌드 시점에 끈다.
@@ -219,4 +233,4 @@ export default defineConfig({
       },
     })]),
   ],
-});
+}));

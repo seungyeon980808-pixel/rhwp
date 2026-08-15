@@ -6,9 +6,15 @@ const CAPABILITIES = [
   'notify-saved-v1',
   'selection-edit-v1',
   'field-fill-v1',
+  'approved-template-edit-v1',
+  'reference-text-extract-v1',
+  'history-undo-v1',
+  'revisioned-save-v1',
 ];
 const LONG_RUNNING_METHODS = new Set([
   'loadFile', 'exportHwp', 'exportHwpVerified', 'exportHwpVerify', 'exportHwpx', 'exportHml',
+  'extractReferenceText', 'preflightApprovedTemplateEdits', 'applyApprovedTemplateEdits',
+  'exportDocumentForSave',
 ]);
 
 export function requestTimeoutFor(method, configuredTimeout) {

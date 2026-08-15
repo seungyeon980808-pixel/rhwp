@@ -4719,6 +4719,33 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
+    /// 승인 템플릿 구조와 해시 기반 가상 필드 후보를 읽기 전용으로 조사한다.
+    #[wasm_bindgen(js_name = inspectApprovedTemplate)]
+    pub fn inspect_approved_template(&self) -> String {
+        self.inspect_approved_template_json()
+    }
+
+    /// 승인 템플릿 요청 전체를 문서 변경 없이 사전 검증한다.
+    #[wasm_bindgen(js_name = preflightApprovedTemplateEdits)]
+    pub fn preflight_approved_template_edits(
+        &mut self,
+        request_json: &str,
+    ) -> Result<String, JsValue> {
+        self.preflight_approved_template_edits_native(request_json)
+            .map_err(|error| error.into())
+    }
+
+    /// 사전 검증 token이 현재 구조와 일치할 때만 요청 전체를 원자 적용한다.
+    #[wasm_bindgen(js_name = applyApprovedTemplateEdits)]
+    pub fn apply_approved_template_edits(
+        &mut self,
+        request_json: &str,
+        preflight_token: &str,
+    ) -> Result<String, JsValue> {
+        self.apply_approved_template_edits_native(request_json, preflight_token)
+            .map_err(|error| error.into())
+    }
+
     /// 현재 본문 위치에 ClickHere 누름틀 필드를 삽입한다.
     #[wasm_bindgen(js_name = insertClickHereField)]
     pub fn insert_click_here_field_api(

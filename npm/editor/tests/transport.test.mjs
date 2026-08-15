@@ -17,6 +17,10 @@ test('EditorTransport는 exact origin의 v1 port로 binary를 caller detach 없�
         'notify-saved-v1',
         'selection-edit-v1',
         'field-fill-v1',
+        'approved-template-edit-v1',
+        'reference-text-extract-v1',
+        'history-undo-v1',
+        'revisioned-save-v1',
       ]);
       const server = ports[0];
       server.onmessage = ({ data }) => {

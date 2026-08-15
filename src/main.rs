@@ -14,6 +14,9 @@ mod lineage_bundle;
 mod mcp_serve;
 mod policy_gate;
 mod settle;
+use rhwp::document_core::approved_template::{
+    measure_cell_overflow, resolve_table_cell, CellResolveError,
+};
 use rhwp::provenance;
 use rhwp::schema_registry::ENVELOPE_SCHEMA_VERSION;
 
@@ -22692,98 +22695,6 @@ fn recolor_cell_text_black(
     true
 }
 
-/// [#3480] 셀에 넣을 텍스트가 칸 폭을 넘치는지 잰다.
-///
-/// 넘치면 `(칸 폭 px, 글자 폭 px, 예상 줄 수)` 를 돌려주고, 들어가면 `None`.
-/// 폭은 조판 엔진의 글자 폭 추정(`estimate_text_width_px`)과 IR 의 `Cell.width` 를 쓴다.
-/// **채우기를 막지는 않는다** — 여러 줄이 정상인 칸도 있으므로 신호만 준다.
-fn measure_cell_overflow(
-    doc: &rhwp::wasm_api::HwpDocument,
-    sec: usize,
-    para: usize,
-    ctrl: usize,
-    cell_idx: usize,
-    text: &str,
-) -> Option<(f64, f64, usize)> {
-    use rhwp::model::control::Control;
-    use rhwp::renderer::hwpunit_to_px;
-
-    if text.is_empty() {
-        return None;
-    }
-    let cell = doc
-        .document()
-        .sections
-        .get(sec)?
-        .paragraphs
-        .get(para)?
-        .controls
-        .get(ctrl)
-        .and_then(|c| match c {
-            Control::Table(t) => t.cells.get(cell_idx),
-            _ => None,
-        })?;
-
-    // 셀 안여백을 뺀 실제 글자 영역 폭.
-    let padding = (cell.padding.left + cell.padding.right) as f64;
-    let usable = hwpunit_to_px(
-        (cell.width as f64 - padding) as i32,
-        rhwp::renderer::DEFAULT_DPI,
-    );
-    if usable <= 0.0 {
-        return None;
-    }
-
-    let text_w = estimate_text_width_px(doc, sec, para, ctrl, cell_idx, text);
-    if text_w <= usable {
-        return None;
-    }
-    let lines = (text_w / usable).ceil() as usize;
-    Some((usable, text_w, lines))
-}
-
-/// 셀의 첫 문단 글자 모양을 기준으로 텍스트 폭(px)을 추정한다.
-///
-/// 정밀 조판이 아니라 **넘침 여부 판정용 근사**다 — 한글은 전각, ASCII 는 반각으로 센다.
-fn estimate_text_width_px(
-    doc: &rhwp::wasm_api::HwpDocument,
-    sec: usize,
-    para: usize,
-    ctrl: usize,
-    cell_idx: usize,
-    text: &str,
-) -> f64 {
-    use rhwp::model::control::Control;
-    use rhwp::renderer::hwpunit_to_px;
-
-    // 셀 첫 문단의 글자 크기(HWPUNIT, 1pt = 100). 못 찾으면 10pt 로 본다.
-    let size_hwpunit = doc
-        .document()
-        .sections
-        .get(sec)
-        .and_then(|s| s.paragraphs.get(para))
-        .and_then(|p| p.controls.get(ctrl))
-        .and_then(|c| match c {
-            Control::Table(t) => t.cells.get(cell_idx),
-            _ => None,
-        })
-        .and_then(|cell| cell.paragraphs.first())
-        .and_then(|p| p.char_shapes.first())
-        .and_then(|cs| {
-            doc.document()
-                .doc_info
-                .char_shapes
-                .get(cs.char_shape_id as usize)
-        })
-        .map(|cs| cs.base_size as f64)
-        .unwrap_or(1000.0);
-
-    let em = hwpunit_to_px(size_hwpunit as i32, rhwp::renderer::DEFAULT_DPI);
-    text.chars()
-        .map(|c| if c.is_ascii() { em * 0.5 } else { em })
-        .sum()
-}
-
 /// [#3603] `set-cell` 계열이 셀 값으로 거부하는 제어문자 안내문.
 ///
 /// CLI(`edit set-cell`)와 세션 도구(`hwp_doc_set_cell`)가 **같은 문장**으로 거부해야 한다 —
@@ -22800,96 +22711,6 @@ fn set_cell_control_char_rejection(text: &str) -> Option<&'static str> {
     text.chars()
         .any(|ch| matches!(ch, '\r' | '\n' | '\t'))
         .then_some(SET_CELL_CONTROL_CHAR_MESSAGE)
-}
-
-/// [#3603] 격자 주소(export-tables 좌표) → 모델 좌표 해석.
-/// CLI(edit set-cell)와 세션 도구(hwp_doc_set_cell)가 공유한다 — 병합으로 덮인 칸은
-/// 앵커 좌표를 안내하며 실패한다(보호 동작). 반환: (sec, para, ctrl, cell_idx,
-/// 문단별 글자 수, 기존 텍스트).
-enum CellResolveError {
-    Usage(String),
-    Runtime(String),
-}
-
-#[allow(clippy::type_complexity)]
-fn resolve_table_cell(
-    document: &rhwp::model::document::Document,
-    table_no: usize,
-    row: u16,
-    col: u16,
-) -> Result<(usize, usize, usize, usize, Vec<usize>, String), CellResolveError> {
-    use rhwp::document_core::queries::table_extract::extract_tables;
-    use rhwp::model::control::Control;
-    let grids = extract_tables(document);
-    let Some(grid) = grids
-        .iter()
-        .find(|g| g.index == table_no && g.container_path.is_empty())
-    else {
-        let top_level = grids.iter().filter(|g| g.container_path.is_empty()).count();
-        return Err(CellResolveError::Runtime(format!(
-            "오류: 본문 최상위 표 {} 번이 없습니다 (최상위 표 {}개; 중첩 표는 v1 범위 밖).",
-            table_no, top_level
-        )));
-    };
-    let Some(Control::Table(table)) = document.sections[grid.section].paragraphs[grid.paragraph]
-        .controls
-        .get(grid.control)
-    else {
-        return Err(CellResolveError::Runtime(
-            "오류: 표 컨트롤 좌표 해석 실패 (내부 불일치).".into(),
-        ));
-    };
-    if row >= table.row_count || col >= table.col_count {
-        return Err(CellResolveError::Usage(format!(
-            "오류: 좌표가 격자를 벗어났습니다 — 표 {} 는 {}x{} 입니다.",
-            table_no, table.row_count, table.col_count
-        )));
-    }
-    match table
-        .cells
-        .iter()
-        .enumerate()
-        .find(|(_, c)| c.row == row && c.col == col)
-    {
-        Some((cell_idx, c)) => {
-            let para_lens: Vec<usize> = c
-                .paragraphs
-                .iter()
-                .map(|p| p.text.chars().count())
-                .collect();
-            let old_text = c
-                .paragraphs
-                .iter()
-                .map(|p| p.text.as_str())
-                .collect::<Vec<_>>()
-                .join(
-                    "
-",
-                )
-                .trim()
-                .to_string();
-            Ok((
-                grid.section,
-                grid.paragraph,
-                grid.control,
-                cell_idx,
-                para_lens,
-                old_text,
-            ))
-        }
-        None => {
-            let anchor = table.cells.iter().find(|c| {
-                c.row <= row && row < c.row + c.row_span && c.col <= col && col < c.col + c.col_span
-            });
-            Err(CellResolveError::Usage(match anchor {
-                Some(a) => format!(
-                    "오류: ({},{}) 는 병합으로 덮인 칸입니다 — 앵커 ({},{}) 를 지정하세요.",
-                    row, col, a.row, a.col
-                ),
-                None => format!("오류: ({},{}) 위치에 셀이 없습니다.", row, col),
-            }))
-        }
-    }
 }
 
 fn edit_set_cell(args: &[String]) -> i32 {

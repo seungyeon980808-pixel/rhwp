@@ -45,6 +45,7 @@ import { isPointNearBoxBorder } from './table-border-hit';
 import { DeferredPaginationRunner } from './deferred-pagination-runner';
 import { tableObjectClipboardTarget } from './table-object-clipboard-target';
 import type { HostSelection } from '@/embed/selection-bridge';
+import type { EmbedHistoryUndoResultV1 } from '@/embed/protocol';
 import { readHostSelection, replaceHostSelection } from '@/embed/host-selection-adapter';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -2499,6 +2500,17 @@ export class InputHandler {
       // [Task #2337] 방금 되돌린 커맨드가 HF/FN 편집이면 그 커서 모드로 복원(본문 moveTo 대신).
       this.restoreEditContextAfterHistory(this.history.peekRedoTop(), newPos);
       this.afterEdit();
+    }
+  }
+
+  /** 임베드 호스트가 키보드와 동일한 정상 Undo 경로로 최상위 편집 한 건만 되돌린다. */
+  undoFromHost(): EmbedHistoryUndoResultV1 {
+    if (!this.history.canUndo()) return { ok: false, reason: 'empty-history' };
+    try {
+      this.handleUndo();
+      return { ok: true };
+    } catch {
+      return { ok: false, reason: 'undo-failed' };
     }
   }
 
@@ -5096,6 +5108,33 @@ export class InputHandler {
       },
     });
     return { ok: true, updated };
+  }
+
+  /** 승인 템플릿 요청 전체를 하나의 snapshot undo 단위로 적용한다. */
+  applyApprovedTemplateEditsFromHost(
+    request: unknown,
+    preflightToken: string,
+  ): Record<string, unknown> {
+    let result: Record<string, unknown> = {
+      schemaVersion: 1,
+      ok: false,
+      updated: 0,
+      changedPages: [],
+      warnings: [],
+      overflowTargets: [],
+      rejectedTargets: [],
+      reason: 'apply-not-run',
+    };
+    this.executeOperation({
+      kind: 'snapshot',
+      operationType: 'applyApprovedTemplateEditsFromHost',
+      operation: (wasm) => {
+        result = wasm.applyApprovedTemplateEdits(request, preflightToken);
+        const updated = Number(result.updated ?? 0);
+        return result.ok === true && updated > 0 ? this.cursor.getPosition() : null;
+      },
+    });
+    return result;
   }
 
   /** 지정된 선택 범위에 글자 서식을 적용한다 (커맨드 시스템용) */

@@ -61,6 +61,10 @@ test('embed protocol은 capability를 포함한 v1 connect와 session-bound requ
     'notify-saved-v1',
     'selection-edit-v1',
     'field-fill-v1',
+    'approved-template-edit-v1',
+    'reference-text-extract-v1',
+    'history-undo-v1',
+    'revisioned-save-v1',
   ]);
 
   assert.equal(isRequestEnvelope({
@@ -847,4 +851,40 @@ test('embed router는 notifySaved fileName을 정규화해 핸들러로 전달�
   await routeEmbedRequest('notifySaved', { fileName: '' }, handlers);
 
   assert.deepEqual(received, [undefined, 'a.hwp', undefined, undefined]);
+});
+
+test('embed router는 revisioned save 파라미터를 엄격히 검증한다', async () => {
+  const received: number[] = [];
+  const handlers = {
+    exportDocumentForSave: async () => ({
+      schemaVersion: 1 as const,
+      bytes: new Uint8Array([1, 2]),
+      revision: 4,
+    }),
+    notifySavedIfUnchanged: async (revision: number) => {
+      received.push(revision);
+      return { ok: true as const, wasDirty: true, currentRevision: revision + 1 };
+    },
+  } as EmbedRpcHandlers;
+
+  assert.deepEqual(await routeEmbedRequest('exportDocumentForSave', { format: 'hwp' }, handlers), {
+    schemaVersion: 1,
+    bytes: new Uint8Array([1, 2]),
+    revision: 4,
+  });
+  assert.deepEqual(
+    await routeEmbedRequest('notifySavedIfUnchanged', { revision: 4 }, handlers),
+    { ok: true, wasDirty: true, currentRevision: 5 },
+  );
+  for (const revision of [-1, 1.5, '4', Number.MAX_SAFE_INTEGER + 1]) {
+    await assert.rejects(
+      () => routeEmbedRequest('notifySavedIfUnchanged', { revision }, handlers),
+      /revision must be a non-negative safe integer/,
+    );
+  }
+  await assert.rejects(
+    () => routeEmbedRequest('exportDocumentForSave', { format: 'pdf' }, handlers),
+    /format must be hwp, hwpx, or hml/,
+  );
+  assert.deepEqual(received, [4]);
 });
