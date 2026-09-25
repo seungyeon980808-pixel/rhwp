@@ -10,6 +10,7 @@ export const EMBED_CAPABILITIES = [
   'reference-text-extract-v1',
   'history-undo-v1',
   'revisioned-save-v1',
+  'collaboration-text-v1',
 ] as const;
 
 export type EmbedHistoryUndoResultV1 =

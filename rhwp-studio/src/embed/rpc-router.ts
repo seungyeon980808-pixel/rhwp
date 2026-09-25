@@ -2,6 +2,11 @@ import type { HmlSaveState } from '../core/hml-save-capability.ts';
 import type { DocumentProtectionProfileV1 } from './document-protection-profile.ts';
 import type { EmbedHistoryUndoResultV1 } from './protocol.ts';
 import type {
+  CollaborationApplyTextRequestV1,
+  CollaborationApplyTextResultV1,
+  CollaborationRegionV1,
+} from './collaboration-text-adapter.ts';
+import type {
   CanvasKitRenderModeRequest,
   CanvasKitSurfaceRequest,
   LayerRenderProfile,
@@ -124,6 +129,12 @@ export interface EmbedRpcHandlers {
     options: { maxChars: number; maxPages: number },
   ): Promise<Record<string, unknown>>;
   undo?(): Promise<EmbedHistoryUndoResultV1>;
+  collaborationActive?(): boolean;
+  beginCollaboration?(): Promise<{ readonly schemaVersion: 1; readonly readOnly: true }>;
+  getCollaborationRegions?(): Promise<readonly CollaborationRegionV1[]>;
+  applyCollaborationText?(
+    request: CollaborationApplyTextRequestV1,
+  ): Promise<CollaborationApplyTextResultV1>;
 }
 
 export interface EmbedRendererDiagnosticsV1 {
@@ -177,6 +188,9 @@ export async function routeEmbedRequest(
   allowLegacyArray = false,
 ): Promise<unknown> {
   const params = asParams(rawParams);
+  if (handlers.collaborationActive?.() && COLLABORATION_DISABLED_METHODS.has(method)) {
+    throw new Error(`${method} is disabled in collaboration mode`);
+  }
   switch (method) {
     case 'ready': return handlers.ready();
     case 'loadFile':
@@ -246,6 +260,45 @@ export async function routeEmbedRequest(
         throw new Error('undo does not accept parameters');
       }
       return handlers.undo();
+    }
+    case 'beginCollaboration': {
+      if (!handlers.beginCollaboration) {
+        throw new Error('Collaboration text v1 is not supported');
+      }
+      if (Object.keys(params).length !== 0) {
+        throw new Error('beginCollaboration does not accept parameters');
+      }
+      return handlers.beginCollaboration();
+    }
+    case 'getCollaborationRegions': {
+      if (!handlers.getCollaborationRegions) {
+        throw new Error('Collaboration text v1 is not supported');
+      }
+      if (Object.keys(params).length !== 0) {
+        throw new Error('getCollaborationRegions does not accept parameters');
+      }
+      return handlers.getCollaborationRegions();
+    }
+    case 'applyCollaborationText': {
+      if (!handlers.applyCollaborationText) {
+        throw new Error('Collaboration text v1 is not supported');
+      }
+      if (Object.keys(params).length !== 3
+          || typeof params.regionId !== 'string'
+          || !/^(?:b:\d+:\d+|c:\d+:\d+:\d+:\d+)$/u.test(params.regionId)
+          || typeof params.expectedText !== 'string'
+          || typeof params.text !== 'string'
+          || !isPlainCollaborationText(params.expectedText)
+          || !isPlainCollaborationText(params.text)) {
+        throw new Error(
+          'applyCollaborationText requires regionId and single-line plain expectedText/text',
+        );
+      }
+      return handlers.applyCollaborationText({
+        regionId: params.regionId,
+        expectedText: params.expectedText,
+        text: params.text,
+      });
     }
     case 'getSelectionSnapshot': {
       if (!handlers.getSelectionSnapshot) {
@@ -348,4 +401,17 @@ export async function routeEmbedRequest(
     }
     default: throw new Error(`Unknown method: ${method}`);
   }
+}
+
+const COLLABORATION_DISABLED_METHODS = new Set([
+  'undo',
+  'replaceSelection',
+  'fillFields',
+  'applyApprovedTemplateEdits',
+  'notifySaved',
+  'notifySavedIfUnchanged',
+]);
+
+function isPlainCollaborationText(value: string): boolean {
+  return value.length <= 20_000 && !/[\u0000-\u001f\u007f\ufffc]/u.test(value);
 }

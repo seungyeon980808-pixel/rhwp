@@ -392,6 +392,54 @@ export class RhwpEditor {
     throw new Error('Invalid history undo result from Studio');
   }
 
+  /** 현재 iframe을 영구 협업 읽기 전용 모드로 전환합니다. */
+  async beginCollaboration() {
+    this._requireCollaborationCapability();
+    const result = await this._request('beginCollaboration');
+    if (result?.schemaVersion !== 1 || result?.readOnly !== true
+        || Object.keys(result).length !== 2) {
+      throw new Error('Invalid collaboration begin result from Studio');
+    }
+    return result;
+  }
+
+  /** 현재 원본 구조에서 지원되는 협업 텍스트 영역을 반환합니다. */
+  async getCollaborationRegions() {
+    this._requireCollaborationCapability();
+    const result = await this._request('getCollaborationRegions');
+    if (!Array.isArray(result) || !result.every(isCollaborationRegion)) {
+      throw new Error('Invalid collaboration regions from Studio');
+    }
+    return result;
+  }
+
+  /** expectedText가 현재 영역 텍스트와 일치할 때만 실제 문서를 교체합니다. */
+  async applyCollaborationText(request) {
+    this._requireCollaborationCapability();
+    if (!request || typeof request !== 'object' || Array.isArray(request)
+        || Object.keys(request).length !== 3
+        || typeof request.regionId !== 'string' || request.regionId.length === 0
+        || typeof request.expectedText !== 'string'
+        || typeof request.text !== 'string'
+        || !isPlainCollaborationText(request.expectedText)
+        || !isPlainCollaborationText(request.text)) {
+      throw new TypeError(
+        'request must contain regionId and single-line plain text expectedText/text',
+      );
+    }
+    const result = await this._request('applyCollaborationText', request);
+    if (!isCollaborationApplyResult(result)) {
+      throw new Error('Invalid collaboration apply result from Studio');
+    }
+    return result;
+  }
+
+  _requireCollaborationCapability() {
+    if (!this._transport.supports('collaboration-text-v1')) {
+      throw new Error('Collaboration text v1 is not supported by this Studio');
+    }
+  }
+
   /**
    * HWP/HWPX/HML 바이트에서 참고 텍스트를 추출합니다.
    * Studio는 현재 편집 문서와 분리된 임시 WASM 문서를 사용하므로 dirty/undo/render 상태를
@@ -445,4 +493,41 @@ export class RhwpEditor {
     this._transport.destroy();
     this._iframe.remove();
   }
+}
+
+function isPlainCollaborationText(value) {
+  return value.length <= 20_000 && !/[\u0000-\u001f\u007f\ufffc]/u.test(value);
+}
+
+function isCollaborationRegion(value) {
+  return value !== null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && Object.keys(value).length === 4
+    && typeof value.id === 'string'
+    && /^(?:b:\d+:\d+|c:\d+:\d+:\d+:\d+)$/u.test(value.id)
+    && (value.kind === 'body' || value.kind === 'cell')
+    && typeof value.label === 'string'
+    && typeof value.text === 'string'
+    && isPlainCollaborationText(value.text);
+}
+
+function isCollaborationApplyResult(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)
+      || value.schemaVersion !== 1 || typeof value.ok !== 'boolean') {
+    return false;
+  }
+  if (value.ok) {
+    return Object.keys(value).length === 4
+      && isCollaborationRegion(value.region)
+      && Number.isSafeInteger(value.revision)
+      && value.revision >= 0;
+  }
+  return Object.keys(value).length === 3
+    && [
+      'region-not-found',
+      'expected-text-mismatch',
+      'unsupported-text',
+      'unsupported-region',
+    ].includes(value.reason);
 }

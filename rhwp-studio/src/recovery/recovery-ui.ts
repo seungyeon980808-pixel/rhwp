@@ -128,6 +128,18 @@ class AutosaveRecoveryDialog extends ModalDialog {
   }
 }
 
-export function showAutosaveRecoveryDialog(drafts: AutosaveDraft[]): Promise<AutosaveRecoveryChoice> {
-  return new AutosaveRecoveryDialog(drafts).showAsync();
+let activeRecoveryDialog: AutosaveRecoveryDialog | null = null;
+
+export async function showAutosaveRecoveryDialog(drafts: AutosaveDraft[]): Promise<AutosaveRecoveryChoice> {
+  const dialog = new AutosaveRecoveryDialog(drafts);
+  activeRecoveryDialog = dialog;
+  try {
+    return await dialog.showAsync();
+  } finally {
+    if (activeRecoveryDialog === dialog) activeRecoveryDialog = null;
+  }
+}
+
+export function dismissAutosaveRecoveryDialog(): void {
+  activeRecoveryDialog?.hide();
 }

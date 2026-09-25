@@ -43,7 +43,7 @@ import { userSettings } from '@/core/user-settings';
 import { AutosaveManager, type AutosaveScheduleSettings, type AutosaveStatus } from '@/recovery/autosave-manager';
 import { clearAutosaveDrafts, deleteAutosaveDraft, listAutosaveDrafts, type AutosaveDraft } from '@/recovery/autosave-store';
 import { recoveryFileName } from '@/recovery/recovery-format';
-import { showAutosaveRecoveryDialog } from '@/recovery/recovery-ui';
+import { dismissAutosaveRecoveryDialog, showAutosaveRecoveryDialog } from '@/recovery/recovery-ui';
 import { CellSelectionRenderer } from '@/engine/cell-selection-renderer';
 import { TableObjectRenderer } from '@/engine/table-object-renderer';
 import { TableResizeRenderer } from '@/engine/table-resize-renderer';
@@ -61,6 +61,7 @@ import { installEmbedRuntime } from '@/embed/runtime';
 import type { EmbedRendererRuntimeRequestV1 } from '@/embed/rpc-router';
 import { SelectionBridge } from '@/embed/selection-bridge';
 import { buildDocumentProtectionProfile } from '@/embed/document-protection-profile';
+import { CollaborationTextAdapter } from '@/embed/collaboration-text-adapter';
 
 const wasm = new WasmBridge();
 const eventBus = new EventBus();
@@ -73,7 +74,7 @@ const autosaveManager = new AutosaveManager({
   schedule: autosaveScheduleFromUserSettings(),
   onStatus: handleAutosaveStatus,
 });
-autosaveManager.connect(eventBus);
+const disconnectAutosaveManager = autosaveManager.connect(eventBus);
 initThemeSync((effective, mode) => {
   eventBus.emit('theme-changed', { mode, effective });
   eventBus.emit('command-state-changed');
@@ -135,9 +136,52 @@ let rendererRuntimeRequest: EmbedRendererRuntimeRequestV1 | null = null;
 let renderBackendFallbackReason: RenderBackendFallbackReason | null = null;
 let rendererInitializationError: string | null = null;
 let rendererInitialized = false;
+let collaborationActive = false;
 let extensionViewerSettings: ExtensionViewerSettings = {
   disableExternalWebFonts: false,
 };
+const collaborationAdapter = new CollaborationTextAdapter(wasm, {
+  currentRevision: () => documentState.revision(),
+  afterApply: async () => {
+    inputHandler?.deactivate();
+    selectionBridge.noteDocumentMutation();
+    documentState.markDirty('collaboration-text-applied');
+    await canvasView?.loadDocument();
+    toolbar?.setEnabled(false);
+  },
+});
+
+function beginCollaborationReadOnlyMode(): void {
+  if (collaborationActive) return;
+  collaborationActive = true;
+  disconnectAutosaveManager();
+  dismissAutosaveRecoveryDialog();
+  inputHandler?.deactivate();
+  toolbar?.setEnabled(false);
+  document.body.dataset.collaborationReadOnly = 'true';
+  const block = (event: Event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  for (const type of [
+    'keydown',
+    'beforeinput',
+    'input',
+    'compositionstart',
+    'compositionend',
+    'paste',
+    'cut',
+    'drop',
+    'pointerdown',
+    'touchstart',
+    'mousedown',
+    'dblclick',
+    'click',
+    'contextmenu',
+  ]) {
+    document.addEventListener(type, block, true);
+  }
+}
 
 
 // ─── 커맨드 시스템 ─────────────────────────────
@@ -1146,7 +1190,7 @@ async function loadBytes(
 
   await autosaveManager.beginDocument(
     { fileName: wasm.fileName, sourceFormat: wasm.getSourceFormat() },
-    { discardPreviousDraft: true },
+    { discardPreviousDraft: !collaborationActive },
   );
   await updateLoadProgress(50, '문서 초기화 중...');
   const elapsed = performance.now() - startTime;
@@ -1225,7 +1269,7 @@ async function renderRecentSubmenu(): Promise<void> {
 
 function shouldSkipInitialAutosaveRecovery(): boolean {
   const params = new URLSearchParams(window.location.search);
-  return params.has('url');
+  return collaborationActive || params.has('url');
 }
 
 async function offerAutosaveRecoveryIfIdle(): Promise<void> {
@@ -1233,10 +1277,12 @@ async function offerAutosaveRecoveryIfIdle(): Promise<void> {
 
   try {
     const drafts = (await listAutosaveDrafts()).filter((draft) => draft.data.byteLength > 0);
+    if (collaborationActive) return;
     if (drafts.length === 0) return;
     if (wasm.pageCount > 0 || documentState.isDirty()) return;
 
     const choice = await showAutosaveRecoveryDialog(drafts);
+    if (collaborationActive) return;
     if (choice.action === 'later') return;
     if (choice.action === 'delete-all') {
       await clearAutosaveDrafts();
@@ -1473,6 +1519,11 @@ installEmbedRuntime({
         throw new Error('문서 열기가 취소되었습니다.');
       }
       await loadBytes(data, fileName, null, undefined, { suppressDialogs });
+      collaborationAdapter.resetCatalog();
+      if (collaborationActive) {
+        inputHandler?.deactivate();
+        toolbar?.setEnabled(false);
+      }
       const pageTrees = Array.from(
         { length: wasm.pageCount },
         (_, pageIndex) => wasm.getPageLayerTreeObject(pageIndex),
@@ -1552,6 +1603,25 @@ installEmbedRuntime({
       await initPromise;
       if (!inputHandler) return { ok: false, reason: 'editor-not-ready' };
       return inputHandler.undoFromHost();
+    },
+    collaborationActive() {
+      return collaborationActive;
+    },
+    async beginCollaboration() {
+      await initPromise;
+      beginCollaborationReadOnlyMode();
+      return { schemaVersion: 1, readOnly: true };
+    },
+    async getCollaborationRegions() {
+      await initPromise;
+      return collaborationAdapter.getRegions();
+    },
+    async applyCollaborationText(request) {
+      await initPromise;
+      if (!collaborationActive) {
+        return { schemaVersion: 1, ok: false, reason: 'unsupported-region' };
+      }
+      return collaborationAdapter.applyText(request);
     },
     async getSelectionSnapshot() {
       await initPromise;

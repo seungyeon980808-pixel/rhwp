@@ -108,6 +108,41 @@ export type HistoryUndoResultV1 =
       readonly reason: 'empty-history' | 'editor-not-ready' | 'undo-failed';
     };
 
+export interface CollaborationBeginResultV1 {
+  readonly schemaVersion: 1;
+  readonly readOnly: true;
+}
+
+export interface CollaborationRegionV1 {
+  readonly id: string;
+  readonly kind: 'body' | 'cell';
+  readonly label: string;
+  readonly text: string;
+}
+
+export interface CollaborationApplyTextRequestV1 {
+  readonly regionId: string;
+  readonly expectedText: string;
+  readonly text: string;
+}
+
+export type CollaborationApplyTextResultV1 =
+  | {
+      readonly schemaVersion: 1;
+      readonly ok: true;
+      readonly region: CollaborationRegionV1;
+      readonly revision: number;
+    }
+  | {
+      readonly schemaVersion: 1;
+      readonly ok: false;
+      readonly reason:
+        | 'region-not-found'
+        | 'expected-text-mismatch'
+        | 'unsupported-text'
+        | 'unsupported-region';
+    };
+
 export interface ApprovedTemplateProtectionV1 {
   readonly schemaVersion: 1;
   readonly status: 'standard' | 'protected';
@@ -450,6 +485,14 @@ export declare class RhwpEditor {
   ): Promise<ApprovedTemplateEditResultV1>;
   /** Studio 히스토리의 최상위 편집 한 건을 되돌립니다. */
   undo(): Promise<HistoryUndoResultV1>;
+  /** 현재 iframe을 영구 협업 읽기 전용 모드로 전환합니다. 문서 로드는 계속 허용됩니다. */
+  beginCollaboration(): Promise<CollaborationBeginResultV1>;
+  /** 현재 원본 구조에서 지원되는 일반 본문 문단과 최상위 단일 문단 셀을 반환합니다. */
+  getCollaborationRegions(): Promise<readonly CollaborationRegionV1[]>;
+  /** 서버가 검증한 예상 텍스트와 일치할 때만 한 영역의 실제 문서 텍스트를 교체합니다. */
+  applyCollaborationText(
+    request: CollaborationApplyTextRequestV1,
+  ): Promise<CollaborationApplyTextResultV1>;
   /** 별도 임시 문서에서 HWP/HWPX/HML 참고 텍스트를 제한 추출합니다. */
   extractReferenceText(
     data: ArrayBuffer | Uint8Array,
