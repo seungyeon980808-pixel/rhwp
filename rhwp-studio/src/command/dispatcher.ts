@@ -1,6 +1,8 @@
 import type { EventBus } from '@/core/event-bus';
 import type { CommandRegistry } from './registry';
 import type { CommandServices, EditorContext } from './types';
+import { isUnsupportedLiveFormat } from '../embed/collaboration-format-boundary.ts';
+import { isUnsupportedLiveStructure, unsupportedLiveStructureReason } from '../embed/collaboration-structure-boundary.ts';
 
 const FORM_MODE_BLOCKED_IDS = new Set([
   'edit:cut',
@@ -47,7 +49,8 @@ export class CommandDispatcher {
     }
 
     const ctx = this.services.getContext();
-    if (isBlockedInFormMode(commandId, ctx)) {
+    if (isBlockedInFormMode(commandId, ctx) || isUnsupportedLiveFormat(commandId, ctx.isLiveCollaboration === true)
+      || isUnsupportedLiveStructure(commandId, ctx.isLiveCollaboration === true)) {
       return false;
     }
     if (def.canExecute && !def.canExecute(ctx)) {
@@ -74,8 +77,14 @@ export class CommandDispatcher {
     const def = this.registry.get(commandId);
     if (!def) return false;
     const ctx = this.services.getContext();
-    if (isBlockedInFormMode(commandId, ctx)) return false;
+    if (isBlockedInFormMode(commandId, ctx) || isUnsupportedLiveFormat(commandId, ctx.isLiveCollaboration === true)
+      || isUnsupportedLiveStructure(commandId, ctx.isLiveCollaboration === true)) return false;
     if (!def.canExecute) return true;
     return def.canExecute(ctx);
+  }
+
+  disabledReason(commandId: string): string | undefined {
+    return isUnsupportedLiveStructure(commandId, this.services.getContext().isLiveCollaboration === true)
+      ? unsupportedLiveStructureReason : undefined;
   }
 }

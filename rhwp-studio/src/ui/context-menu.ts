@@ -53,6 +53,11 @@ export class ContextMenu {
       if (!this.dispatcher.isEnabled(cmdId)) {
         row.classList.add('disabled');
       }
+      const reason = this.dispatcher.disabledReason(cmdId);
+      if (reason) {
+        row.title = reason;
+        row.setAttribute('aria-description', reason);
+      }
 
       // 레이블
       const labelSpan = document.createTextNode(item.label ?? def.label);

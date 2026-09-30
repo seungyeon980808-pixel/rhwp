@@ -22,8 +22,9 @@ export const editCommands: CommandDef[] = [
     label: '되돌리기',
     icon: 'icon-undo',
     shortcutLabel: 'Ctrl+Z',
-    canExecute: (ctx) => ctx.hasDocument && ctx.canUndo,
+    canExecute: (ctx) => ctx.hasDocument && ctx.canUndo && !ctx.isLiveCollaboration,
     execute(services) {
+      if (services.getContext().isLiveCollaboration) return;
       services.getInputHandler()?.performUndo();
     },
   },
@@ -32,8 +33,9 @@ export const editCommands: CommandDef[] = [
     label: '다시 실행',
     icon: 'icon-redo',
     shortcutLabel: 'Ctrl+Shift+Z',
-    canExecute: (ctx) => ctx.hasDocument && ctx.canRedo,
+    canExecute: (ctx) => ctx.hasDocument && ctx.canRedo && !ctx.isLiveCollaboration,
     execute(services) {
+      if (services.getContext().isLiveCollaboration) return;
       services.getInputHandler()?.performRedo();
     },
   },

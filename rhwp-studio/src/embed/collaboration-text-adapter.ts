@@ -77,17 +77,69 @@ export class CollaborationTextAdapter {
   }
 
   async getRegions(): Promise<readonly CollaborationRegionV1[]> {
+    return this.getRegionsSync();
+  }
+
+  getRegionsSync(): readonly CollaborationRegionV1[] {
     const inspection = this.wasm.inspectApprovedTemplate();
     if (!isStandardInspection(inspection)) return [];
     if (this.frozenRegions === null) {
       this.frozenRegions = freezeRegions(inspection, this.wasm);
-      this.frozenStructureDigest = stringValue(inspection, 'structureDigest');
+      this.frozenStructureDigest = catalogStructureDigest(inspection);
     }
-    if (stringValue(inspection, 'structureDigest') !== this.frozenStructureDigest) return [];
+    if (catalogStructureDigest(inspection) !== this.frozenStructureDigest) return [];
     return this.frozenRegions.flatMap((frozen) => {
       const current = currentTarget(inspection, frozen, this.wasm);
       return current === null ? [] : [current.region];
     });
+  }
+
+  resolveAddress(id: string): string | null {
+    const region = this.frozenRegions?.find((entry) => entry.id === id);
+    return region ? nativeAddress(region.address) : null;
+  }
+
+  checkpoint(): () => void {
+    const regions = this.frozenRegions;
+    const digest = this.frozenStructureDigest;
+    return () => { this.frozenRegions = regions; this.frozenStructureDigest = digest; };
+  }
+
+  remapStructure(mapping: readonly Readonly<{ id: string; importAddress: string }>[]): void {
+    const inspection = this.wasm.inspectApprovedTemplate();
+    if (!isStandardInspection(inspection)) throw new TypeError('Invalid collaboration structure');
+    const mapped = new Set(mapping.map((entry) => entry.importAddress));
+    const current = freezeRegions(inspection, this.wasm).filter((region) => mapped.has(nativeAddress(region.address)));
+    for (const entry of mapping) {
+      if (current.some((region) => nativeAddress(region.address) === entry.importAddress)) continue;
+      const match = /^b:(\d+):(\d+)$/u.exec(entry.importAddress);
+      if (!match?.[1] || !match[2]) throw new TypeError('Invalid empty paragraph mapping');
+      const sectionIndex = Number(match[1]);
+      const paragraphIndex = Number(match[2]);
+      if (paragraphIndex >= (this.wasm.getParagraphCount?.(sectionIndex) ?? 0)
+        || this.wasm.getParagraphLength(sectionIndex, paragraphIndex) !== 0
+        || this.wasm.getControlTextPositions?.(sectionIndex, paragraphIndex).length !== 0)
+        throw new TypeError('Invalid empty paragraph mapping');
+      current.push({ id: entry.id, label: `Body ${sectionIndex + 1}.${paragraphIndex + 1}`,
+        address: { kind: 'body', sectionIndex, paragraphIndex, adjacentLabelDigest: '' } });
+    }
+    const ids = new Set(mapping.map((entry) => entry.id));
+    const addresses = new Map(mapping.map((entry) => [entry.importAddress, entry.id]));
+    if (ids.size !== mapping.length || addresses.size !== mapping.length || current.length !== mapping.length
+      || current.some((entry) => !addresses.has(nativeAddress(entry.address))))
+      throw new TypeError('Incomplete collaboration structure mapping');
+    current.sort((left, right) => {
+      if (left.address.kind !== right.address.kind) return left.address.kind === 'body' ? -1 : 1;
+      const a = nativeAddress(left.address).split(':').slice(1).map(Number);
+      const b = nativeAddress(right.address).split(':').slice(1).map(Number);
+      for (let index = 0; index < a.length; index += 1) {
+        const difference = (a[index] ?? 0) - (b[index] ?? 0);
+        if (difference !== 0) return difference;
+      }
+      return 0;
+    });
+    this.frozenRegions = current.map((entry) => ({ ...entry, id: addresses.get(nativeAddress(entry.address)) ?? entry.id }));
+    this.frozenStructureDigest = catalogStructureDigest(inspection);
   }
 
   async applyText(
@@ -99,12 +151,16 @@ export class CollaborationTextAdapter {
     await this.getRegions();
     const frozen = this.frozenRegions?.find((region) => region.id === request.regionId);
     if (!frozen) return { schemaVersion: 1, ok: false, reason: 'region-not-found' };
+    if (frozen.address.kind === 'cell' && this.wasm.getCellParagraphCount(
+      frozen.address.sectionIndex, frozen.address.parentParagraphIndex,
+      frozen.address.controlIndex, frozen.address.cellIndex,
+    ) !== 1) return { schemaVersion: 1, ok: false, reason: 'unsupported-region' };
 
     const inspection = this.wasm.inspectApprovedTemplate();
     if (!isStandardInspection(inspection)) {
       return { schemaVersion: 1, ok: false, reason: 'unsupported-region' };
     }
-    if (stringValue(inspection, 'structureDigest') !== this.frozenStructureDigest) {
+    if (catalogStructureDigest(inspection) !== this.frozenStructureDigest) {
       return { schemaVersion: 1, ok: false, reason: 'unsupported-region' };
     }
     const current = currentTarget(inspection, frozen, this.wasm);
@@ -140,7 +196,7 @@ export class CollaborationTextAdapter {
     }
     await this.effects.afterApply();
     const refreshedInspection = this.wasm.inspectApprovedTemplate();
-    if (stringValue(refreshedInspection, 'structureDigest') === this.frozenStructureDigest) {
+    if (catalogStructureDigest(refreshedInspection) === this.frozenStructureDigest) {
       this.frozenRegions = this.frozenRegions?.map((region) => ({
         ...region,
         address: refreshAdjacentLabelDigest(refreshedInspection, region.address),
@@ -195,7 +251,9 @@ function freezeRegions(
     return readRegion(frozen, wasm) === null ? [] : [frozen];
   });
   const cells = arrayValue(inspection, 'tableCells').flatMap((candidate) => {
-    if (booleanValue(candidate, 'safe') !== true) return [];
+    const blocked = arrayValue(candidate, 'blockedReasons');
+    if (booleanValue(candidate, 'safe') !== true
+      && !(blocked.length === 1 && blocked[0] === 'multiple-paragraphs')) return [];
     const resolved = recordValue(candidate, 'resolvedAddress');
     const sectionIndex = integerValue(resolved, 'sectionIndex');
     const parentParagraphIndex = integerValue(resolved, 'paragraphIndex');
@@ -219,7 +277,7 @@ function freezeRegions(
         parentParagraphIndex,
         controlIndex,
         cellIndex,
-      ) !== 1
+      ) < 1
     ) return [];
     const frozen: FrozenRegion = {
       id: `c:${sectionIndex}:${parentParagraphIndex}:${controlIndex}:${cellIndex}`,
@@ -293,33 +351,48 @@ function readRegion(
   wasm: CollaborationWasm,
 ): CollaborationRegionV1 | null {
   const address = frozen.address;
-  const text = address.kind === 'body'
-    ? wasm.getTextRange(
+  const paragraphs = address.kind === 'body'
+    ? [wasm.getTextRange(
       address.sectionIndex,
       address.paragraphIndex,
       0,
       wasm.getParagraphLength(address.sectionIndex, address.paragraphIndex),
-    )
-    : wasm.getTextInCell(
+    )]
+    : Array.from({ length: wasm.getCellParagraphCount(
+      address.sectionIndex, address.parentParagraphIndex, address.controlIndex, address.cellIndex,
+    ) }, (_, cellParagraph) => wasm.getTextInCell(
       address.sectionIndex,
       address.parentParagraphIndex,
       address.controlIndex,
       address.cellIndex,
-      0,
+      cellParagraph,
       0,
       wasm.getCellParagraphLength(
         address.sectionIndex,
         address.parentParagraphIndex,
         address.controlIndex,
         address.cellIndex,
-        0,
+        cellParagraph,
       ),
-    );
-  if (!isPlainSingleParagraphText(text)) return null;
-  return { id: frozen.id, kind: address.kind, label: frozen.label, text };
+    ));
+  if (!paragraphs.every(isPlainSingleParagraphText)) return null;
+  const text = paragraphs.join('\n');
+  if (text.length > MAX_COLLABORATION_TEXT_CHARS) return null;
+  const importAddress = nativeAddress(address);
+  return { id: frozen.id, kind: address.kind, label: frozen.label, text,
+    ...(frozen.id === importAddress ? {} : { importAddress }) };
+}
+
+function nativeAddress(address: RegionAddress): string {
+  return address.kind === 'body' ? `b:${address.sectionIndex}:${address.paragraphIndex}`
+    : `c:${address.sectionIndex}:${address.parentParagraphIndex}:${address.controlIndex}:${address.cellIndex}`;
 }
 
 function isStandardInspection(inspection: Record<string, unknown>): boolean {
   return integerValue(inspection, 'schemaVersion') === 1
     && stringValue(recordValue(inspection, 'protection'), 'status') === 'standard';
+}
+
+function catalogStructureDigest(inspection: Record<string, unknown>): string | null {
+  return stringValue(inspection, 'collaborationTextStructureDigest') ?? stringValue(inspection, 'structureDigest');
 }

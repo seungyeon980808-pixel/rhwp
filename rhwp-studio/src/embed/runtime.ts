@@ -9,6 +9,7 @@ import {
   type EmbedResponseEnvelope,
 } from './protocol.ts';
 import { routeEmbedRequest, type EmbedRpcHandlers } from './rpc-router.ts';
+import { CollaborationGeometryError } from './collaboration-region-geometry.ts';
 
 interface EmbedRuntimeOptions {
   hostWindow: Window;
@@ -61,7 +62,10 @@ function bindPort(port: MessagePort, sessionId: string, handlers: EmbedRpcHandle
     try {
       response.result = await routeEmbedRequest(data.method, data.params, handlers);
     } catch (error) {
-      response.error = { code: 'RPC_ERROR', message: errorText(error) };
+      response.error = {
+        code: error instanceof CollaborationGeometryError ? error.code : 'RPC_ERROR',
+        message: errorText(error),
+      };
     }
     postPortResponse(port, response);
   };
@@ -105,7 +109,9 @@ async function handleLegacy(
     const result = await routeEmbedRequest(method, params, handlers, true);
     response.result = result instanceof Uint8Array ? Array.from(result) : result;
   } catch (error) {
-    response.error = errorText(error);
+    response.error = error instanceof CollaborationGeometryError
+      ? { code: error.code, message: error.message }
+      : errorText(error);
   }
   (event.source as WindowProxy | null)?.postMessage(response, { targetOrigin: event.origin });
 }

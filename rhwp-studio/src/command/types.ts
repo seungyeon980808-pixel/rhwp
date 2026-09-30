@@ -36,6 +36,7 @@ export interface EditorContext {
   isFormMode: boolean;
   /** 현재 커서 위치가 양식 모드에서 수정 가능한 누름틀인가? */
   canEditFormField: boolean;
+  readonly isLiveCollaboration?: boolean;
   /** Undo 가능한가? */
   canUndo: boolean;
   /** Redo 가능한가? */

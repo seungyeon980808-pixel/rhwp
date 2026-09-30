@@ -645,7 +645,8 @@ impl DocumentCore {
                     )
                 }).collect();
                 let (fill_type_str, fill_color, pat_color, pat_type) = match &bf.fill.solid {
-                    Some(sf) if bf.fill.fill_type == FillType::Solid => {
+                    Some(sf) if bf.fill.fill_type == FillType::Solid
+                        && (sf.background_color != u32::MAX || sf.pattern_type != -1) => {
                         ("solid", color_ref_to_css(sf.background_color),
                          color_ref_to_css(sf.pattern_color), sf.pattern_type)
                     }
@@ -733,41 +734,47 @@ impl DocumentCore {
                     })
                     .collect();
                 let (fill_type_str, fill_color, pat_color, pat_type) = match &bf.fill.solid {
-                    Some(sf) if bf.fill.fill_type == FillType::Solid => (
-                        "solid",
-                        color_ref_to_css(sf.background_color),
-                        color_ref_to_css(sf.pattern_color),
-                        sf.pattern_type,
-                    ),
+                    Some(sf)
+                        if bf.fill.fill_type == FillType::Solid
+                            && (sf.background_color != u32::MAX || sf.pattern_type != -1) =>
+                    {
+                        (
+                            "solid",
+                            color_ref_to_css(sf.background_color),
+                            color_ref_to_css(sf.pattern_color),
+                            sf.pattern_type,
+                        )
+                    }
                     _ => ("none", "#ffffff".to_string(), "#000000".to_string(), 0),
                 };
                 format!(
                     "\"borderFillId\":{},{},\"fillType\":\"{}\",\"fillColor\":\"{}\",\"patternColor\":\"{}\",\"patternType\":{}",
-                    bf_id, borders.join(","), fill_type_str, fill_color, pat_color, pat_type,
+                    bf_id,
+                    borders.join(","),
+                    fill_type_str,
+                    fill_color,
+                    pat_color,
+                    pat_type,
                 )
             } else {
-                format!(
-                    concat!(
-                        "\"borderFillId\":0,",
-                        "\"borderLeft\":{{\"type\":0,\"width\":0,\"color\":\"#000000\"}},",
-                        "\"borderRight\":{{\"type\":0,\"width\":0,\"color\":\"#000000\"}},",
-                        "\"borderTop\":{{\"type\":0,\"width\":0,\"color\":\"#000000\"}},",
-                        "\"borderBottom\":{{\"type\":0,\"width\":0,\"color\":\"#000000\"}},",
-                        "\"fillType\":\"none\",\"fillColor\":\"#ffffff\",\"patternColor\":\"#000000\",\"patternType\":0"
-                    )
-                )
-            }
-        } else {
-            format!(
-                concat!(
+                format!(concat!(
                     "\"borderFillId\":0,",
                     "\"borderLeft\":{{\"type\":0,\"width\":0,\"color\":\"#000000\"}},",
                     "\"borderRight\":{{\"type\":0,\"width\":0,\"color\":\"#000000\"}},",
                     "\"borderTop\":{{\"type\":0,\"width\":0,\"color\":\"#000000\"}},",
                     "\"borderBottom\":{{\"type\":0,\"width\":0,\"color\":\"#000000\"}},",
                     "\"fillType\":\"none\",\"fillColor\":\"#ffffff\",\"patternColor\":\"#000000\",\"patternType\":0"
-                )
-            )
+                ))
+            }
+        } else {
+            format!(concat!(
+                "\"borderFillId\":0,",
+                "\"borderLeft\":{{\"type\":0,\"width\":0,\"color\":\"#000000\"}},",
+                "\"borderRight\":{{\"type\":0,\"width\":0,\"color\":\"#000000\"}},",
+                "\"borderTop\":{{\"type\":0,\"width\":0,\"color\":\"#000000\"}},",
+                "\"borderBottom\":{{\"type\":0,\"width\":0,\"color\":\"#000000\"}},",
+                "\"fillType\":\"none\",\"fillColor\":\"#ffffff\",\"patternColor\":\"#000000\",\"patternType\":0"
+            ))
         };
 
         // [Task #1037 + para-unit regression] dialog 표시 한컴 정합:
@@ -2230,7 +2237,37 @@ impl DocumentCore {
 
 #[cfg(test)]
 mod tests {
-    use super::{char_shape_mods_affect_text_flow, para_shape_mods_affect_text_flow, DocumentCore};
+    #[test]
+    fn collaboration_inspector_distinguishes_transparent_and_white_fill() {
+        use crate::model::style::{BorderFill, CharShape, Fill, FillType, SolidFill};
+        let mut core = DocumentCore::new_empty();
+        let shape = CharShape {
+            border_fill_id: 1,
+            ..Default::default()
+        };
+        for (color, pattern, expected) in [
+            (u32::MAX, -1, "none"),
+            (0x00ff_ffff, -1, "solid"),
+            (u32::MAX, 0, "solid"),
+        ] {
+            core.document.doc_info.border_fills = vec![BorderFill {
+                fill: Fill {
+                    fill_type: FillType::Solid,
+                    solid: Some(SolidFill {
+                        background_color: color,
+                        pattern_color: 0,
+                        pattern_type: pattern,
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }];
+            let json = format!("{{{}}}", core.build_char_border_fill_json(Some(&shape)));
+            let properties: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(properties["fillType"], expected);
+        }
+    }
+    use super::{DocumentCore, char_shape_mods_affect_text_flow, para_shape_mods_affect_text_flow};
     use crate::model::control::Control;
     use crate::model::paragraph::{CharShapeRef, Paragraph};
     use crate::model::style::{CharShapeMods, ParaShapeMods};

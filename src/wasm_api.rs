@@ -1021,6 +1021,11 @@ impl HwpDocument {
         }
     }
 
+    #[wasm_bindgen(js_name = getBinaryResourceManifest)]
+    pub fn get_binary_resource_manifest(&self) -> String {
+        self.get_binary_resource_manifest_native()
+    }
+
     /// 페이지 정보를 JSON 문자열로 반환한다.
     #[wasm_bindgen(js_name = getPageInfo)]
     pub fn get_page_info(&self, page_num: u32) -> Result<String, JsValue> {

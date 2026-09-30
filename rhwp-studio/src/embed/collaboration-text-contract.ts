@@ -3,6 +3,7 @@ export interface CollaborationRegionV1 {
   readonly kind: 'body' | 'cell';
   readonly label: string;
   readonly text: string;
+  readonly importAddress?: string;
 }
 
 export interface CollaborationApplyTextRequestV1 {
@@ -29,6 +30,8 @@ export type CollaborationApplyTextResultV1 =
     };
 
 export interface CollaborationWasm {
+  getControlTextPositions?(section: number, paragraph: number): number[];
+  getParagraphCount?(section: number): number;
   inspectApprovedTemplate(): Record<string, unknown>;
   getParagraphLength(sectionIndex: number, paragraphIndex: number): number;
   getTextRange(sectionIndex: number, paragraphIndex: number, charOffset: number, count: number): string;

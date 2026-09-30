@@ -1,5 +1,5 @@
 import { WasmBridge } from '@/core/wasm-bridge';
-import type { DocumentInfo } from '@/core/types';
+import type { DocumentInfo, DocumentPosition } from '@/core/types';
 import { EventBus } from '@/core/event-bus';
 import { assertRemoteDocumentBytes } from '@/core/document-signature';
 import { CanvasView } from '@/view/canvas-view';
@@ -62,12 +62,22 @@ import type { EmbedRendererRuntimeRequestV1 } from '@/embed/rpc-router';
 import { SelectionBridge } from '@/embed/selection-bridge';
 import { buildDocumentProtectionProfile } from '@/embed/document-protection-profile';
 import { CollaborationTextAdapter } from '@/embed/collaboration-text-adapter';
+import { getCollaborationRegionRects } from '@/embed/collaboration-region-geometry';
+import { readCollaborationPresence } from '@/embed/collaboration-presence';
+import { CollaborationLiveAdapter } from '@/embed/collaboration-live-adapter';
+import { installLiveFormatBoundary } from '@/embed/collaboration-format-boundary';
+import { installLiveStructureBoundary } from '@/embed/collaboration-structure-boundary';
+import { CollaborationBodyHost } from '@/embed/collaboration-body-host';
+import { BodyStructureNativeError } from '@/embed/collaboration-body-structure';
 
 const wasm = new WasmBridge();
 const eventBus = new EventBus();
 const documentState = new DocumentDirtyState(eventBus);
 const selectionBridge = new SelectionBridge();
 eventBus.on('document-mutated', () => selectionBridge.noteDocumentMutation());
+eventBus.on('document-mutated', () => {
+  if (collaborationActive && !collaborationReadOnly) void collaborationLiveAdapter.captureLocal();
+});
 documentState.installBeforeUnload(window);
 const autosaveManager = new AutosaveManager({
   exportBytes: () => wasm.exportHwp(),
@@ -137,6 +147,7 @@ let renderBackendFallbackReason: RenderBackendFallbackReason | null = null;
 let rendererInitializationError: string | null = null;
 let rendererInitialized = false;
 let collaborationActive = false;
+let collaborationReadOnly = false;
 let extensionViewerSettings: ExtensionViewerSettings = {
   disableExternalWebFonts: false,
 };
@@ -154,6 +165,7 @@ const collaborationAdapter = new CollaborationTextAdapter(wasm, {
 function beginCollaborationReadOnlyMode(): void {
   if (collaborationActive) return;
   collaborationActive = true;
+  collaborationReadOnly = true;
   disconnectAutosaveManager();
   dismissAutosaveRecoveryDialog();
   inputHandler?.deactivate();
@@ -183,6 +195,69 @@ function beginCollaborationReadOnlyMode(): void {
   }
 }
 
+const collaborationLiveAdapter = new CollaborationLiveAdapter(wasm, {
+  regions: () => collaborationAdapter.getRegions(),
+  revision: () => documentState.revision(),
+  refresh: async (change) => {
+    inputHandler?.applyRemoteTextChange(change);
+    selectionBridge.noteDocumentMutation();
+    documentState.markDirty('collaboration-ops-applied');
+    await canvasView?.loadDocument();
+  },
+});
+
+const collaborationBodyHost = new CollaborationBodyHost(wasm, collaborationAdapter,
+  () => inputHandler?.isCompositionActive() ?? false, () => documentState.revision());
+let bodyStructureInputAtStage = '';
+
+function captureBodyStructure(event: KeyboardEvent | ClipboardEvent): void {
+  if (!collaborationActive || collaborationReadOnly || !collaborationBodyHost.enabled) return;
+  if (!inputHandler?.isEditorInput(event.target)) return;
+  const input = inputHandler?.getBodyStructureInput();
+  if (!input || inputHandler?.isCompositionActive()) return;
+  let action: 'enter' | 'backspace' | 'delete' | 'paste';
+  let text = '';
+  if (event instanceof KeyboardEvent) {
+    if (event.isComposing || event.keyCode === 229 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    switch (event.key) {
+      case 'Enter': action = 'enter'; break;
+      case 'Backspace': action = 'backspace'; break;
+      case 'Delete': action = 'delete'; break;
+      default: return;
+    }
+  } else {
+    if (!event.clipboardData || event.clipboardData.getData('text/html')
+      || Array.from(event.clipboardData.items).some((item) => item.kind === 'file')) return;
+    action = 'paste'; text = event.clipboardData.getData('text/plain');
+  }
+  try {
+    if (!collaborationBodyHost.stage(action, input.position, input.selection, text)) return;
+    bodyStructureInputAtStage = JSON.stringify(input);
+    event.preventDefault(); event.stopImmediatePropagation();
+    const status = sbMessage();
+    if (status) status.textContent = '문단 변경의 서버 저장 확인을 기다리고 있습니다.';
+  } catch (error) {
+    if (!(error instanceof BodyStructureNativeError)) throw error;
+    event.preventDefault(); event.stopImmediatePropagation();
+    showToast({ message: error.message });
+  }
+}
+document.addEventListener('keydown', captureBodyStructure, true);
+document.addEventListener('paste', captureBodyStructure, true);
+
+async function beginLiveCollaborationMode(): Promise<void> {
+  wasm.restrictLiveTableStructure();
+  if (!collaborationActive) {
+    collaborationActive = true;
+    collaborationReadOnly = false;
+    disconnectAutosaveManager();
+    dismissAutosaveRecoveryDialog();
+    installLiveFormatBoundary(document);
+    installLiveStructureBoundary(document);
+  }
+  await collaborationLiveAdapter.begin();
+}
+
 
 // ─── 커맨드 시스템 ─────────────────────────────
 const registry = new CommandRegistry();
@@ -206,6 +281,7 @@ function getContext(): EditorContext {
     editMode,
     isFormMode,
     canEditFormField,
+    isLiveCollaboration: collaborationActive && !collaborationReadOnly,
     canUndo: inputHandler?.canUndo() ?? false,
     canRedo: inputHandler?.canRedo() ?? false,
     zoom: canvasView?.getViewportManager().getZoom() ?? 1.0,
@@ -1520,7 +1596,8 @@ installEmbedRuntime({
       }
       await loadBytes(data, fileName, null, undefined, { suppressDialogs });
       collaborationAdapter.resetCatalog();
-      if (collaborationActive) {
+      collaborationBodyHost.reset();
+      if (collaborationReadOnly) {
         inputHandler?.deactivate();
         toolbar?.setEnabled(false);
       }
@@ -1612,9 +1689,82 @@ installEmbedRuntime({
       beginCollaborationReadOnlyMode();
       return { schemaVersion: 1, readOnly: true };
     },
+    async beginLiveCollaboration() {
+      await initPromise;
+      await beginLiveCollaborationMode();
+      return { schemaVersion: 1, readOnly: false };
+    },
+    async setLivePastePolicy(policy) {
+      await initPromise;
+      wasm.setLivePastePolicy(policy);
+    },
+    async configureBodyStructure(configuration) {
+      await initPromise;
+      if (!collaborationActive) throw new BodyStructureNativeError('FORBIDDEN');
+      wasm.restrictLiveTableStructure();
+      collaborationBodyHost.configure(configuration);
+      await collaborationLiveAdapter.begin();
+    },
+    async getBodyStructureRequests() {
+      await initPromise;
+      return collaborationBodyHost.requests();
+    },
+    async resolveBodyStructure(resolution) {
+      await initPromise;
+      const pending = collaborationBodyHost.awaitingReceipt;
+      const current = inputHandler?.getBodyStructureInput();
+      const result = collaborationBodyHost.resolve(resolution);
+      if (pending && result?.applied) {
+        const remap = (point: DocumentPosition) => collaborationBodyHost.remapAppliedPosition(point);
+        const moved = current && JSON.stringify(current) !== bodyStructureInputAtStage;
+        const cursor = moved ? remap(current.position) : result.cursor;
+        const selection = moved && current.selection ? { start: remap(current.selection.start), end: remap(current.selection.end) } : null;
+        await collaborationLiveAdapter.begin();
+        selectionBridge.noteDocumentMutation();
+        documentState.markDirty('collaboration-structure-applied');
+        await canvasView?.loadDocument();
+        inputHandler?.restoreBodyStructureSelection(cursor, selection);
+        const status = sbMessage();
+        if (status) status.textContent = '서버에서 저장한 문단 변경을 적용했습니다.';
+      } else if (pending && !result) {
+        const status = sbMessage();
+        if (status) status.textContent = '문단 변경이 취소되었습니다. 기존 내용은 보존됩니다.';
+        showToast({ message: '문단 변경이 취소되었습니다. 기존 내용은 보존됩니다.' });
+      }
+      return result;
+    },
+    async applyRemoteBodyStructure(request) {
+      await initPromise;
+      if (!collaborationActive) throw new BodyStructureNativeError('FORBIDDEN');
+      const current = inputHandler?.getBodyStructureInput();
+      const outcome = collaborationBodyHost.applyRemote(request);
+      if (outcome.status !== 'applied') return outcome;
+      const remap = (point: DocumentPosition) => collaborationBodyHost.remapAppliedPosition(point);
+      const cursor = current ? remap(current.position) : outcome.result.cursor;
+      const selection = current?.selection ? { start: remap(current.selection.start), end: remap(current.selection.end) } : null;
+      await collaborationLiveAdapter.begin();
+      selectionBridge.noteDocumentMutation();
+      documentState.markDirty('collaboration-remote-structure-applied');
+      collaborationBodyHost.observeAppliedRevision();
+      await canvasView?.loadDocument();
+      if (current) inputHandler?.restoreBodyStructureSelection(cursor, selection);
+      return outcome;
+    },
     async getCollaborationRegions() {
       await initPromise;
       return collaborationAdapter.getRegions();
+    },
+    async getCollaborationPresence() {
+      await initPromise;
+      return inputHandler ? readCollaborationPresence(inputHandler) : null;
+    },
+    async getCollaborationRegionRects(request) {
+      await initPromise;
+      return getCollaborationRegionRects(request, {
+        wasm,
+        regions: (await collaborationAdapter.getRegions()).map((region) => ({ ...region, id: region.importAddress ?? region.id })),
+        zoom: canvasView?.getViewportManager().getZoom() ?? Number.NaN,
+      });
     },
     async applyCollaborationText(request) {
       await initPromise;
@@ -1622,6 +1772,22 @@ installEmbedRuntime({
         return { schemaVersion: 1, ok: false, reason: 'unsupported-region' };
       }
       return collaborationAdapter.applyText(request);
+    },
+    async applyCollaborationOps(request) {
+      await initPromise;
+      if (!collaborationActive) {
+        return { schemaVersion: 1, ok: false, reason: 'region-not-found' };
+      }
+      return collaborationLiveAdapter.apply(request);
+    },
+    async getCollaborationManifest() {
+      await initPromise;
+      return collaborationLiveAdapter.manifest();
+    },
+    async getCollaborationMutations(afterSequence) {
+      await initPromise;
+      await collaborationLiveAdapter.captureLocal();
+      return collaborationLiveAdapter.drain(afterSequence);
     },
     async getSelectionSnapshot() {
       await initPromise;

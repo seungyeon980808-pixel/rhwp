@@ -1,4 +1,6 @@
 import { WasmBridge } from '@/core/wasm-bridge';
+import { UnsupportedLiveStructureError } from '../embed/collaboration-structure-boundary';
+import { remapCollaborationTextPosition, type CollaborationTextChange } from '../embed/collaboration-text-position';
 import type { DeferredFocusedPagePatch } from '@/core/wasm-bridge';
 import { EventBus } from '@/core/event-bus';
 import { CursorState } from './cursor';
@@ -2636,6 +2638,15 @@ export class InputHandler {
    * 라우터가 적절한 Undo 전략을 자동 선택한다.
    */
   executeOperation(desc: OperationDescriptor): void {
+    try {
+      this.executeAllowedOperation(desc);
+    } catch (error) {
+      if (!(error instanceof UnsupportedLiveStructureError)) throw error;
+      window.alert(error.message);
+    }
+  }
+
+  private executeAllowedOperation(desc: OperationDescriptor): void {
     if (!this.isOperationAllowedInEditMode(desc)) return;
     switch (desc.kind) {
       case 'command': {
@@ -4008,6 +4019,49 @@ export class InputHandler {
 
   /** 현재 커서 위치를 반환한다 */
   getCursorPosition(): DocumentPosition { return this.cursor.getPosition(); }
+
+  isCompositionActive(): boolean { return this.isComposing; }
+
+  applyRemoteTextChange(change: CollaborationTextChange): void {
+    const state = this.getBodyStructureInput();
+    if (!state) return;
+    const remap = (position: DocumentPosition) => remapCollaborationTextPosition(position, change);
+    if (this.compositionAnchor) this.compositionAnchor = remap(this.compositionAnchor);
+    if (this._iosAnchor) this._iosAnchor = remap(this._iosAnchor);
+    if (this.pendingCharShapeAnchor) this.pendingCharShapeAnchor = remap(this.pendingCharShapeAnchor);
+    const selection = this.cursor.getSelection();
+    if (selection) {
+      this.cursor.clearSelection();
+      this.cursor.moveTo(remap(selection.anchor));
+      this.cursor.setAnchor();
+    }
+    this.cursor.moveTo(remap(state.position));
+    this.cursor.resetPreferredX();
+    this.updateSelection();
+    this.updateCaret(true);
+  }
+
+  isEditorInput(target: EventTarget | null): boolean { return target === this.textarea; }
+
+  restoreBodyStructureSelection(position: DocumentPosition, selection: Readonly<{ start: DocumentPosition; end: DocumentPosition }> | null): void {
+    if (this.isComposing) return;
+    this.moveCursorTo(position);
+    if (selection) {
+      const anchor = JSON.stringify(position) === JSON.stringify(selection.start) ? selection.end : selection.start;
+      this.cursor.moveTo(anchor);
+      this.cursor.setAnchor();
+      this.cursor.moveTo(position);
+      this.updateSelection();
+      this.updateCaret();
+    }
+  }
+
+  getBodyStructureInput(): Readonly<{ position: DocumentPosition; selection: Readonly<{ start: DocumentPosition; end: DocumentPosition }> | null }> | null {
+    if (!this.active || this.isFormMode() || this.cursor.isInHeaderFooter() || this.cursor.isInFootnote()
+      || this.cursor.isInPictureObjectSelection() || this.cursor.isInTableObjectSelection()
+      || this.cursor.isInCellSelectionMode() || this.cursor.isInBlockSelectionMode()) return null;
+    return { position: this.cursor.getPosition(), selection: this.getNonEmptySelection() };
+  }
 
   /** 본문 탐색 전에 각주 전용 편집 컨텍스트를 종료한다. */
   exitFootnoteModeForBodyNavigation(): void {

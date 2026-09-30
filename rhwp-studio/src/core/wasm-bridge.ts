@@ -1,4 +1,7 @@
 import init, { HwpDocument, version } from '@wasm/rhwp.js';
+import { UnsupportedLiveStructureError } from '../embed/collaboration-structure-boundary';
+import type { LivePastePolicy } from '../embed/collaboration-range-paste';
+import { BodyStructureNativeError } from '../embed/collaboration-body-structure';
 import * as wasmExports from '@wasm/rhwp.js';
 import { blake3 } from '@noble/hashes/blake3.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -258,6 +261,37 @@ function installCanvasFontSubstitution(): void {
 }
 
 export class WasmBridge {
+  private liveTableStructureRestricted = false;
+  private livePastePolicy: LivePastePolicy | null = null;
+
+  setLivePastePolicy(policy: LivePastePolicy): void {
+    if (this.livePastePolicy && this.livePastePolicy.epoch !== policy.epoch) {
+      this.livePastePolicy = { ...this.livePastePolicy, writableRegionIds: [] };
+      throw new Error('Live paste epoch mismatch');
+    }
+    this.livePastePolicy = { epoch: policy.epoch, writableRegionIds: [...policy.writableRegionIds] };
+  }
+
+  canPasteLiveRegion(regionId: string, epoch?: string): boolean {
+    return this.livePastePolicy?.writableRegionIds.includes(regionId) === true
+      && (epoch === undefined || this.livePastePolicy.epoch === epoch);
+  }
+
+  getLivePasteEpoch(): string | undefined {
+    return this.livePastePolicy?.epoch;
+  }
+
+  restrictLiveTableStructure(): void {
+    this.liveTableStructureRestricted = true;
+  }
+
+  isLiveStructureRestricted(): boolean {
+    return this.liveTableStructureRestricted;
+  }
+
+  private assertTableStructureAllowed(): void {
+    if (this.liveTableStructureRestricted) throw new UnsupportedLiveStructureError();
+  }
   private doc: HwpDocument | null = null;
   private initialized = false;
   private _fileName = 'document.hwp';
@@ -381,6 +415,7 @@ export class WasmBridge {
       // 오류에서는 현재 문서와 최근 문서 연결을 그대로 유지해야 한다 (#3474).
       const previousDoc = this.doc;
       this.doc = nextDoc;
+      this.livePastePolicy = null;
       this._fileName = nextFileName;
       this._currentFileHandle = null;
       this._requiresPasswordForSave = false;
@@ -928,6 +963,12 @@ export class WasmBridge {
     }
   }
 
+  getBinaryResourceManifest(): string | null {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    const document = this.doc as unknown as { getBinaryResourceManifest?: () => string };
+    return document.getBinaryResourceManifest?.() ?? null;
+  }
+
   /**
    * 본문(flow) 그림의 배치 정보만 받는다 (Task #3315).
    *
@@ -1221,8 +1262,53 @@ export class WasmBridge {
   }
 
   splitParagraph(sec: number, para: number, charOffset: number, removedParaMeta?: RemovedParaMeta): string {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return this.doc.splitParagraph(sec, para, charOffset, serializeParaMeta(removedParaMeta));
+  }
+
+  replaceLiveBodyRange(section: number, startParagraph: number, startOffset: number,
+    endParagraph: number, endOffset: number, text: string, expectedTexts: readonly string[], authority: 'local' | 'remote' = 'local'): void {
+    if (!this.doc || !this.liveTableStructureRestricted) throw new BodyStructureNativeError('STALE_STATE');
+    if (![section, startParagraph, startOffset, endParagraph, endOffset].every((value) => Number.isSafeInteger(value) && value >= 0)
+      || endParagraph < startParagraph || (endParagraph === startParagraph && endOffset < startOffset)
+      || expectedTexts.length !== endParagraph - startParagraph + 1
+      || text.length > 200_000 || /[\u0000-\u0009\u000b-\u001f\u007f\ufffc\ud800-\udfff]/u.test(text))
+      throw new BodyStructureNativeError('INVALID_RANGE');
+    const inspection = this.inspectApprovedTemplate();
+    const candidates = inspection.bodyCandidates;
+    if (!Array.isArray(candidates)) throw new BodyStructureNativeError('UNSUPPORTED_STRUCTURE');
+    for (let paragraph = startParagraph; paragraph <= endParagraph; paragraph += 1) {
+      if (authority === 'local' && !this.canPasteLiveRegion(`b:${section}:${paragraph}`)) throw new BodyStructureNativeError('FORBIDDEN');
+      const emptyPlain = paragraph < this.getParagraphCount(section) && this.getParagraphLength(section, paragraph) === 0
+        && this.getControlTextPositions(section, paragraph).length === 0;
+      if (!emptyPlain && !candidates.some((candidate: unknown) => candidate !== null && typeof candidate === 'object'
+        && Reflect.get(candidate, 'sectionIndex') === section && Reflect.get(candidate, 'paragraphIndex') === paragraph))
+        throw new BodyStructureNativeError('UNSUPPORTED_STRUCTURE');
+      if (this.getTextRange(section, paragraph, 0, this.getParagraphLength(section, paragraph)) !== expectedTexts[paragraph - startParagraph])
+        throw new BodyStructureNativeError('STALE_STATE');
+    }
+    if (startOffset > this.getParagraphLength(section, startParagraph) || endOffset > this.getParagraphLength(section, endParagraph))
+      throw new BodyStructureNativeError('INVALID_RANGE');
+    const snapshot = this.doc.saveSnapshot();
+    const check = (result: string): void => {
+      const parsed: unknown = JSON.parse(result);
+      if (!parsed || typeof parsed !== 'object' || Reflect.get(parsed, 'ok') !== true) throw new BodyStructureNativeError('NATIVE_FAILURE');
+    };
+    try {
+      if (startParagraph !== endParagraph || startOffset !== endOffset)
+        check(this.doc.deleteRange(section, startParagraph, startOffset, endParagraph, endOffset));
+      const parts = text.split('\n');
+      for (const [index, part] of parts.entries()) {
+        const paragraph = startParagraph + index;
+        if (index > 0) check(this.doc.splitParagraph(section, paragraph - 1,
+          (index === 1 ? startOffset : 0) + [...(parts[index - 1] ?? '')].length));
+        if (part.length > 0) check(this.doc.insertText(section, paragraph, index === 0 ? startOffset : 0, part));
+      }
+    } catch (error) {
+      this.doc.restoreSnapshot(snapshot);
+      throw error;
+    } finally { this.doc.discardSnapshot(snapshot); }
   }
 
   insertPageBreak(sec: number, para: number, charOffset: number): string {
@@ -1251,6 +1337,7 @@ export class WasmBridge {
   }
 
   mergeParagraph(sec: number, para: number): string {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return this.doc.mergeParagraph(sec, para);
   }
@@ -1687,6 +1774,7 @@ export class WasmBridge {
   }
 
   deleteTableControl(sec: number, parentPara: number, controlIdx: number): { ok: boolean } {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.deleteTableControl(sec, parentPara, controlIdx));
   }
@@ -1769,16 +1857,19 @@ export class WasmBridge {
   }
 
   setTableProperties(sec: number, parentPara: number, controlIdx: number, props: Partial<TableProperties>): { ok: boolean } {
+    if (props.hasCaption !== undefined) this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.setTableProperties(sec, parentPara, controlIdx, JSON.stringify(props)));
   }
 
   mergeTableCells(sec: number, parentPara: number, controlIdx: number, startRow: number, startCol: number, endRow: number, endCol: number): { ok: boolean; cellCount: number } {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.mergeTableCells(sec, parentPara, controlIdx, startRow, startCol, endRow, endCol));
   }
 
   splitTableCell(sec: number, parentPara: number, controlIdx: number, row: number, col: number): { ok: boolean; cellCount: number } {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.splitTableCell(sec, parentPara, controlIdx, row, col));
   }
@@ -1789,6 +1880,7 @@ export class WasmBridge {
     nRows: number, mCols: number,
     equalRowHeight: boolean, mergeFirst: boolean,
   ): { ok: boolean; cellCount: number } {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return JSON.parse((this.doc as any).splitTableCellInto(sec, parentPara, controlIdx, row, col, nRows, mCols, equalRowHeight, mergeFirst));
@@ -1799,6 +1891,7 @@ export class WasmBridge {
     startRow: number, startCol: number, endRow: number, endCol: number,
     nRows: number, mCols: number, equalRowHeight: boolean,
   ): { ok: boolean; cellCount: number } {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return JSON.parse((this.doc as any).splitTableCellsInRange(sec, parentPara, controlIdx, startRow, startCol, endRow, endCol, nRows, mCols, equalRowHeight));
@@ -1832,6 +1925,7 @@ export class WasmBridge {
     startRow: number,
     startCol: number,
   ): TableTransposeResult {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse((this.doc as any).pasteTableCellsTransposed(
       sec,
@@ -1847,6 +1941,7 @@ export class WasmBridge {
     parentPara: number,
     controlIdx: number,
   ): TableTransposeResult {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse((this.doc as any).transposeTableCellsInPlace(sec, parentPara, controlIdx));
   }
@@ -1856,6 +1951,7 @@ export class WasmBridge {
     para: number,
     charOffset: number,
   ): TableTransposeResult {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse((this.doc as any).pasteTableCellsTransposedAsTable(sec, para, charOffset));
   }
@@ -1867,37 +1963,44 @@ export class WasmBridge {
 
   /** 표를 지정 행에서 두 개로 나눈다 (한컴 [표-표 나누기]). */
   splitTable(sec: number, parentPara: number, controlIdx: number, atRow: number): { ok: boolean; frontRows: number; backParaIdx: number } {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.splitTable(sec, parentPara, controlIdx, atRow));
   }
 
   /** 현재 표에 다음 표를 이어 붙인다 (한컴 [표-표 붙이기]). */
   mergeTableWithNext(sec: number, parentPara: number, controlIdx: number): { ok: boolean; rowCount: number } {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.mergeTableWithNext(sec, parentPara, controlIdx));
   }
 
   insertTableRow(sec: number, parentPara: number, controlIdx: number, rowIdx: number, below: boolean): { ok: boolean; rowCount: number; colCount: number } {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.insertTableRow(sec, parentPara, controlIdx, rowIdx, below));
   }
 
   insertTableColumn(sec: number, parentPara: number, controlIdx: number, colIdx: number, right: boolean): { ok: boolean; rowCount: number; colCount: number } {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.insertTableColumn(sec, parentPara, controlIdx, colIdx, right));
   }
 
   deleteTableRow(sec: number, parentPara: number, controlIdx: number, rowIdx: number): { ok: boolean; rowCount: number; colCount: number } {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.deleteTableRow(sec, parentPara, controlIdx, rowIdx));
   }
 
   deleteTableColumn(sec: number, parentPara: number, controlIdx: number, colIdx: number): { ok: boolean; rowCount: number; colCount: number } {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.deleteTableColumn(sec, parentPara, controlIdx, colIdx));
   }
 
   createTable(sec: number, para: number, charOffset: number, rows: number, cols: number): { ok: boolean; paraIdx: number; controlIdx: number } {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.createTable(sec, para, charOffset, rows, cols));
   }
@@ -1912,6 +2015,7 @@ export class WasmBridge {
     colWidths?: number[];
     rowHeights?: number[];
   }): { ok: boolean; paraIdx: number; controlIdx: number } {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse((this.doc as any).createTableEx(JSON.stringify(options)));
   }
@@ -2415,6 +2519,7 @@ export class WasmBridge {
   }
 
   deleteRange(sec: number, startPara: number, startOffset: number, endPara: number, endOffset: number): { ok: boolean; paraIdx: number; charOffset: number } {
+    if (startPara !== endPara) this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.deleteRange(sec, startPara, startOffset, endPara, endOffset));
   }
@@ -2442,16 +2547,19 @@ export class WasmBridge {
   }
 
   pasteInternal(sec: number, para: number, charOffset: number): string {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return this.doc.pasteInternal(sec, para, charOffset);
   }
 
   pasteInternalInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number): string {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return this.doc.pasteInternalInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset);
   }
 
   pasteInternalInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number): string {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return (this.doc as any).pasteInternalInCellByPath(sec, parentPara, pathJson, charOffset);
   }
@@ -2494,6 +2602,7 @@ export class WasmBridge {
   }
 
   pasteControl(sec: number, para: number, charOffset: number): string {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return this.doc.pasteControl(sec, para, charOffset);
   }
@@ -2514,16 +2623,19 @@ export class WasmBridge {
   }
 
   pasteHtml(sec: number, para: number, charOffset: number, html: string): string {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return this.doc.pasteHtml(sec, para, charOffset, html);
   }
 
   pasteHtmlInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, html: string): string {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return this.doc.pasteHtmlInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, html);
   }
 
   pasteHtmlInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, html: string): string {
+    this.assertTableStructureAllowed();
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return (this.doc as any).pasteHtmlInCellByPath(sec, parentPara, pathJson, charOffset, html);
   }

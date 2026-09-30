@@ -450,6 +450,7 @@ impl DocumentCore {
             "schemaVersion": 1,
             "format": source_format_name(self.source_format),
             "structureDigest": structure_digest,
+            "collaborationTextStructureDigest": document_structure_digest(self.document(), true),
             "pageCount": self.page_count(),
             "sectionCount": self.document().sections.len(),
             "paragraphCount": self.document().sections.iter().map(|s| s.paragraphs.len()).sum::<usize>(),
@@ -1023,30 +1024,38 @@ fn preflight_token(
 }
 
 fn approved_structure_digest(document: &Document) -> String {
+    document_structure_digest(document, false)
+}
+
+fn document_structure_digest(document: &Document, cell_text_structure: bool) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"rhwp-approved-template-structure-v1\0");
+    hasher.update(if cell_text_structure {
+        b"rhwp-collaboration-text-structure-v1\0".as_slice()
+    } else {
+        b"rhwp-approved-template-structure-v1\0".as_slice()
+    });
     hash_usize(&mut hasher, document.sections.len());
     hash_usize(&mut hasher, document.bin_data_content.len());
     for section in &document.sections {
         hash_section_layout(&mut hasher, &section.section_def);
         hash_usize(&mut hasher, section.paragraphs.len());
-        hash_paragraphs(&mut hasher, &section.paragraphs);
+        hash_paragraphs(&mut hasher, &section.paragraphs, cell_text_structure);
     }
     prefixed_sha256(hasher.finalize().as_slice())
 }
 
-fn hash_paragraphs(hasher: &mut Sha256, paragraphs: &[Paragraph]) {
+fn hash_paragraphs(hasher: &mut Sha256, paragraphs: &[Paragraph], cell_text_structure: bool) {
     for paragraph in paragraphs {
         hasher.update(paragraph.para_shape_id.to_le_bytes());
         hasher.update(paragraph.style_id.to_le_bytes());
         hash_usize(hasher, paragraph.controls.len());
         for control in &paragraph.controls {
-            hash_control(hasher, control);
+            hash_control(hasher, control, cell_text_structure);
         }
     }
 }
 
-fn hash_control(hasher: &mut Sha256, control: &Control) {
+fn hash_control(hasher: &mut Sha256, control: &Control, cell_text_structure: bool) {
     match control {
         Control::SectionDef(_) => hasher.update(b"section-def"),
         Control::ColumnDef(_) => hasher.update(b"column-def"),
@@ -1095,27 +1104,36 @@ fn hash_control(hasher: &mut Sha256, control: &Control) {
                     u8::from(cell.is_header),
                     u8::from(cell.cell_protect()),
                 ]);
-                hash_usize(hasher, cell.paragraphs.len());
-                hash_paragraphs(hasher, &cell.paragraphs);
+                if cell_text_structure
+                    && !cell.paragraphs.is_empty()
+                    && cell.paragraphs.iter().all(|paragraph| {
+                        paragraph.controls.is_empty() && !paragraph.text.contains('\u{fffc}')
+                    })
+                {
+                    hasher.update(b"plain-cell-paragraphs");
+                } else {
+                    hash_usize(hasher, cell.paragraphs.len());
+                    hash_paragraphs(hasher, &cell.paragraphs, cell_text_structure);
+                }
             }
         }
         Control::Shape(_) => hasher.update(b"shape"),
         Control::Picture(_) => hasher.update(b"picture"),
         Control::Header(header) => {
             hasher.update(b"header");
-            hash_paragraphs(hasher, &header.paragraphs);
+            hash_paragraphs(hasher, &header.paragraphs, cell_text_structure);
         }
         Control::Footer(footer) => {
             hasher.update(b"footer");
-            hash_paragraphs(hasher, &footer.paragraphs);
+            hash_paragraphs(hasher, &footer.paragraphs, cell_text_structure);
         }
         Control::Footnote(note) => {
             hasher.update(b"footnote");
-            hash_paragraphs(hasher, &note.paragraphs);
+            hash_paragraphs(hasher, &note.paragraphs, cell_text_structure);
         }
         Control::Endnote(note) => {
             hasher.update(b"endnote");
-            hash_paragraphs(hasher, &note.paragraphs);
+            hash_paragraphs(hasher, &note.paragraphs, cell_text_structure);
         }
         Control::AutoNumber(_) => hasher.update(b"auto-number"),
         Control::NewNumber(_) => hasher.update(b"new-number"),

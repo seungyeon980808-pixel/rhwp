@@ -1166,7 +1166,14 @@ fn write_para_pr<W: Write>(
         "BREAK_WORD"
     };
     // [#1986] breakLatinWord 는 IR 원문 보존값(없으면 KEEP_WORD 기본).
-    let break_latin = ps.break_latin_word.as_deref().unwrap_or("KEEP_WORD");
+    let break_latin = ps
+        .break_latin_word
+        .as_deref()
+        .unwrap_or(match (ps.attr1 >> 5) & 3 {
+            1 => "HYPHENATION",
+            2 => "BREAK_WORD",
+            _ => "KEEP_WORD",
+        });
     let widow_orphan = ((ps.attr2 >> 5) & 1).to_string();
     let keep_with_next = ((ps.attr2 >> 6) & 1).to_string();
     let keep_lines = ((ps.attr2 >> 7) & 1).to_string();
@@ -1447,6 +1454,23 @@ use super::utils::start_tag;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn collaboration_export_preserves_latin_break_modes() {
+        for mode in 0_u32..=2 {
+            let mut document = crate::model::document::Document::default();
+            document
+                .doc_info
+                .para_shapes
+                .push(crate::model::style::ParaShape {
+                    attr1: mode << 5,
+                    ..Default::default()
+                });
+            let context = super::SerializeContext::collect_from_document(&document);
+            let xml = String::from_utf8(super::write_header(&document, &context).unwrap()).unwrap();
+            let (parsed, _) = crate::parser::hwpx::header::parse_hwpx_header(&xml).unwrap();
+            assert_eq!((parsed.para_shapes[0].attr1 >> 5) & 3, mode);
+        }
+    }
     use super::*;
     use crate::parser::hwpx::parse_hwpx;
 

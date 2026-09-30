@@ -66,6 +66,7 @@ test('embed protocol은 capability를 포함한 v1 connect와 session-bound requ
     'history-undo-v1',
     'revisioned-save-v1',
     'collaboration-text-v1',
+    'collaboration-live-v1',
   ]);
 
   assert.equal(isRequestEnvelope({

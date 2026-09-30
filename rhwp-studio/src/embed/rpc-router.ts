@@ -1,11 +1,21 @@
 import type { HmlSaveState } from '../core/hml-save-capability.ts';
+import { CollaborationGeometryError, parseCollaborationGeometryRequest, type CollaborationRegionRectsV1, type CollaborationGeometryRequest } from './collaboration-region-geometry.ts';
+import type { CollaborationPresenceV1 } from './collaboration-presence.ts';
 import type { DocumentProtectionProfileV1 } from './document-protection-profile.ts';
 import type { EmbedHistoryUndoResultV1 } from './protocol.ts';
+import { parseFormatOperation } from './collaboration-format.ts';
+import type { BodyStructureRequest, BodyStructureResult, BodyStructureRemoteResult } from './collaboration-body-host.ts';
 import type {
   CollaborationApplyTextRequestV1,
   CollaborationApplyTextResultV1,
   CollaborationRegionV1,
 } from './collaboration-text-adapter.ts';
+import type {
+  CollaborationApplyOpsRequestV1,
+  CollaborationApplyOpsResultV1,
+  CollaborationManifestV1,
+  CollaborationMutationV1,
+} from './collaboration-live-contract.ts';
 import type {
   CanvasKitRenderModeRequest,
   CanvasKitSurfaceRequest,
@@ -131,10 +141,23 @@ export interface EmbedRpcHandlers {
   undo?(): Promise<EmbedHistoryUndoResultV1>;
   collaborationActive?(): boolean;
   beginCollaboration?(): Promise<{ readonly schemaVersion: 1; readonly readOnly: true }>;
+  beginLiveCollaboration?(): Promise<{ readonly schemaVersion: 1; readonly readOnly: false }>;
+  setLivePastePolicy?(policy: Readonly<{ epoch: string; writableRegionIds: readonly string[] }>): Promise<void>;
+  configureBodyStructure?(configuration: unknown): Promise<void>;
+  getBodyStructureRequests?(): Promise<readonly BodyStructureRequest[]>;
+  resolveBodyStructure?(resolution: unknown): Promise<BodyStructureResult | null>;
+  applyRemoteBodyStructure?(request: unknown): Promise<BodyStructureRemoteResult>;
   getCollaborationRegions?(): Promise<readonly CollaborationRegionV1[]>;
+  getCollaborationRegionRects?(request: CollaborationGeometryRequest): Promise<CollaborationRegionRectsV1>;
+  getCollaborationPresence?(): Promise<CollaborationPresenceV1 | null>;
   applyCollaborationText?(
     request: CollaborationApplyTextRequestV1,
   ): Promise<CollaborationApplyTextResultV1>;
+  applyCollaborationOps?(
+    request: CollaborationApplyOpsRequestV1,
+  ): Promise<CollaborationApplyOpsResultV1>;
+  getCollaborationManifest?(): Promise<CollaborationManifestV1>;
+  getCollaborationMutations?(afterSequence: number): Promise<readonly CollaborationMutationV1[]>;
 }
 
 export interface EmbedRendererDiagnosticsV1 {
@@ -270,6 +293,44 @@ export async function routeEmbedRequest(
       }
       return handlers.beginCollaboration();
     }
+    case 'beginLiveCollaboration': {
+      if (!handlers.beginLiveCollaboration) throw new Error('Collaboration live v1 is not supported');
+      if (Object.keys(params).length !== 0) throw new Error('beginLiveCollaboration does not accept parameters');
+      return handlers.beginLiveCollaboration();
+    }
+    case 'setLivePastePolicy': {
+      if (!handlers.setLivePastePolicy || typeof params.epoch !== 'string' || !params.epoch
+        || !Array.isArray(params.writableRegionIds) || params.writableRegionIds.length > 10_000
+        || !params.writableRegionIds.every((id): id is string => typeof id === 'string' && /^(?:b:\d+:\d+|c:\d+:\d+:\d+:\d+)$/.test(id)))
+        throw new TypeError('Invalid live paste policy');
+      return handlers.setLivePastePolicy({ epoch: params.epoch, writableRegionIds: params.writableRegionIds });
+    }
+    case 'configureBodyStructure': {
+      if (!handlers.configureBodyStructure) throw new TypeError('Body structure is unavailable');
+      return handlers.configureBodyStructure(rawParams);
+    }
+    case 'getBodyStructureRequests': {
+      if (!handlers.getBodyStructureRequests || Object.keys(params).length !== 0) throw new TypeError('Invalid body structure request');
+      return handlers.getBodyStructureRequests();
+    }
+    case 'resolveBodyStructure': {
+      if (!handlers.resolveBodyStructure) throw new TypeError('Body structure is unavailable');
+      return handlers.resolveBodyStructure(params);
+    }
+    case 'applyRemoteBodyStructure': {
+      if (!handlers.applyRemoteBodyStructure) throw new TypeError('Body structure is unavailable');
+      return handlers.applyRemoteBodyStructure(params);
+    }
+    case 'getCollaborationPresence': {
+      if (!handlers.getCollaborationPresence || Object.keys(params).length !== 0)
+        throw new CollaborationGeometryError('unsupported-geometry');
+      return handlers.getCollaborationPresence();
+    }
+    case 'getCollaborationRegionRects': {
+      const request = parseCollaborationGeometryRequest(rawParams);
+      if (!handlers.getCollaborationRegionRects) throw new CollaborationGeometryError('unsupported-geometry');
+      return handlers.getCollaborationRegionRects(request);
+    }
     case 'getCollaborationRegions': {
       if (!handlers.getCollaborationRegions) {
         throw new Error('Collaboration text v1 is not supported');
@@ -299,6 +360,51 @@ export async function routeEmbedRequest(
         expectedText: params.expectedText,
         text: params.text,
       });
+    }
+    case 'applyCollaborationOps': {
+      if (!handlers.applyCollaborationOps) throw new Error('Collaboration live v1 is not supported');
+      if (typeof params.regionId !== 'string'
+          || typeof params.expectedText !== 'string'
+          || typeof params.origin !== 'string'
+          || params.origin.length === 0
+          || !Array.isArray(params.ops)
+          || params.ops.length < 1
+          || params.ops.length > 1_000) {
+        throw new Error('applyCollaborationOps requires regionId, expectedText, origin, and 1..1000 ops');
+      }
+      const ops = params.ops.map((raw) => {
+        const op = asParams(raw);
+        if (op.type === 'format') {
+          const format = parseFormatOperation(op);
+          if (format) return format;
+          throw new Error('invalid collaboration format');
+        }
+        if (op.type === 'insert' && Number.isSafeInteger(op.offset) && typeof op.text === 'string') {
+          return { type: 'insert' as const, offset: op.offset as number, text: op.text };
+        }
+        if (op.type === 'delete' && Number.isSafeInteger(op.offset) && Number.isSafeInteger(op.count)) {
+          return { type: 'delete' as const, offset: op.offset as number, count: op.count as number };
+        }
+        throw new Error('invalid collaboration op');
+      });
+      return handlers.applyCollaborationOps({
+        regionId: params.regionId,
+        expectedText: params.expectedText,
+        origin: params.origin,
+        ops,
+      });
+    }
+    case 'getCollaborationManifest': {
+      if (!handlers.getCollaborationManifest) throw new Error('Collaboration live v1 is not supported');
+      if (Object.keys(params).length !== 0) throw new Error('getCollaborationManifest does not accept parameters');
+      return handlers.getCollaborationManifest();
+    }
+    case 'getCollaborationMutations': {
+      if (!handlers.getCollaborationMutations) throw new Error('Collaboration live v1 is not supported');
+      if (!Number.isSafeInteger(params.afterSequence) || (params.afterSequence as number) < 0) {
+        throw new Error('afterSequence must be a non-negative safe integer');
+      }
+      return handlers.getCollaborationMutations(params.afterSequence as number);
     }
     case 'getSelectionSnapshot': {
       if (!handlers.getSelectionSnapshot) {

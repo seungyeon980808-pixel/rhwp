@@ -1,4 +1,5 @@
 import type { CommandDef, CommandServices, EditorContext } from '../types';
+import { UnsupportedLiveStructureError } from '../../embed/collaboration-structure-boundary';
 import { TableCellPropsDialog } from '@/ui/table-cell-props-dialog';
 import { TableCreateDialog } from '@/ui/table-create-dialog';
 import type { TableCreateOptions } from '@/ui/table-create-dialog';
@@ -25,7 +26,10 @@ type TableCellCommandContext = {
 };
 
 function safeTableOp(fn: () => void, label: string): void {
-  try { fn(); } catch (e) { console.error(`[table] ${label} 실패:`, e); }
+  try { fn(); } catch (e) {
+    if (e instanceof UnsupportedLiveStructureError) window.alert(e.message);
+    else console.error(`[table] ${label} 실패:`, e);
+  }
 }
 
 function equalizeTargetRange(ih: ReturnType<CommandServices['getInputHandler']>, dims: TableDimensions): CellRange {

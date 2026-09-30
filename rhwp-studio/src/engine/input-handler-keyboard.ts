@@ -14,6 +14,8 @@ import {
 import type { DocumentPosition, CellBbox, CellPathLike } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import { tableObjectClipboardTarget } from './table-object-clipboard-target';
+import { unsupportedLiveStructureReason } from '../embed/collaboration-structure-boundary';
+import { applyLivePaste, LivePasteError, planLivePaste } from '../embed/collaboration-range-paste';
 
 const RHWP_CLIPBOARD_MARKER_RE = /<!--\s*rhwp-studio-clipboard:([A-Za-z0-9._:-]+)\s*-->/;
 const PAGINATION_BOUNDARY_KEYS = new Set([
@@ -1252,6 +1254,10 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     case 'Enter': {
       e.preventDefault();
       if (this.isFormMode?.()) return;
+      if (this.wasm.isLiveStructureRestricted?.() && ((!e.shiftKey && !inCell) || this.cursor.hasSelection())) {
+        window.alert(unsupportedLiveStructureReason);
+        return;
+      }
       if (this.cursor.hasSelection()) this.deleteSelection();
       if (e.shiftKey) {
         // Shift+Enter: 강제 줄바꿈 (문단 유지, 줄만 바꿈)
@@ -1402,9 +1408,8 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       // Function 키(F1~F12) 등 Ctrl 없는 단축키 처리
       if (this.dispatcher) {
         const cmdId = matchShortcut(e, defaultShortcuts);
-        if (cmdId) {
+        if (cmdId && this.dispatcher.dispatch(cmdId)) {
           e.preventDefault();
-          this.dispatcher.dispatch(cmdId);
         }
       }
       break;
@@ -1692,6 +1697,31 @@ export function onPaste(this: any, e: ClipboardEvent): void {
   if (!this.active) return;
   e.preventDefault();
   if (this.isFormMode?.()) return;
+
+  if (this.wasm.isLiveStructureRestricted?.()) {
+    const html = e.clipboardData?.getData('text/html') || '';
+    const text = e.clipboardData?.getData('text/plain') || '';
+    const hasFiles = Array.from(e.clipboardData?.items ?? []).some((item) => item.kind === 'file');
+    if (hasFiles || !e.clipboardData || (/[\r\n]/.test(text) && this.cursor.getPosition().parentParaIndex === undefined)
+      || this.cursor.isInPictureObjectSelection() || this.cursor.isInTableObjectSelection()) {
+      window.alert(unsupportedLiveStructureReason);
+      return;
+    }
+    if (!html && !this.cursor.hasSelection() && !/[\r\n]/.test(text)) {
+      pastePlainText.call(this, text, false);
+      return;
+    }
+    try {
+      const selection = this.cursor.getSelectionOrdered();
+      const position = this.cursor.getPosition();
+      const plan = planLivePaste(this.wasm, { start: selection?.start ?? position, end: selection?.end ?? position, html, text });
+      this.executeOperation({ kind: 'snapshot', operationType: 'liveRangePaste', operation: (wasm: WasmBridge) => applyLivePaste(wasm, plan) });
+    } catch (error) {
+      if (!(error instanceof LivePasteError)) throw error;
+      window.alert(error.message);
+    }
+    return;
+  }
 
   // 개체/표 선택 모드 해제 후 붙여넣기 진행
   if (this.cursor.isInPictureObjectSelection()) {

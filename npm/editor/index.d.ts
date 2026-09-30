@@ -17,6 +17,34 @@ export interface EditorOptions {
   handshakeTimeoutMs?: number;
 }
 
+export type BodyStructureOperation = Readonly<{
+  version: 1; epoch: string; operationId: string; topologyRevision: number; durableAck: number;
+  start: Readonly<{ regionId: string; offset: number }>;
+  end: Readonly<{ regionId: string; offset: number }>;
+  expectedRevisions: readonly Readonly<{ regionId: string; revision: number }>[];
+  text: string;
+}>;
+export type BodyStructureConfiguration = Readonly<{
+  epoch: string; policyVersion: number; topologyRevision: number; durableAck: number;
+  regions: readonly Readonly<{ id: string; importAddress: string; text: string; revision: number }>[];
+  writableRegionIds: readonly string[];
+}>;
+export type BodyStructureRequest = Readonly<{ planId: string; operation: BodyStructureOperation }>;
+export type BodyStructureReceipt = Readonly<{
+  operation: BodyStructureOperation; actorKey: string; durableAck: number; topologyRevision: number;
+  regionIds: readonly string[]; removedRegionIds: readonly string[];
+}>;
+export type BodyStructureResolution = Readonly<{ planId: string; receipt: BodyStructureReceipt | null; reason?: string }>;
+export type BodyStructureRemoteRequest = Readonly<{ before: BodyStructureConfiguration; receipt: BodyStructureReceipt }>;
+export type BodyStructureRemoteResult = Readonly<{ status: 'applied' | 'duplicate'; result: BodyStructureResult }>
+  | Readonly<{ status: 'deferred'; reason: 'pending' | 'composing' | 'dirty' | 'stale'; recovery: 'reconcile' }>;
+export type BodyStructureResult = Readonly<{
+  applied: boolean;
+  tombstones: readonly string[];
+  regions: readonly CollaborationRegionV1[]; removedRegionIds: readonly string[];
+  cursor: Readonly<{ sectionIndex: number; paragraphIndex: number; charOffset: number }>;
+}>;
+
 export interface LoadResult {
   pageCount: number;
   protection?: DocumentProtectionProfileV1;
@@ -113,11 +141,68 @@ export interface CollaborationBeginResultV1 {
   readonly readOnly: true;
 }
 
+export interface CollaborationLiveBeginResultV1 {
+  readonly schemaVersion: 1;
+  readonly readOnly: false;
+}
+
+export type CollaborationOpV1 =
+  | { readonly type: 'insert'; readonly offset: number; readonly text: string }
+  | { readonly type: 'delete'; readonly offset: number; readonly count: number }
+  | CollaborationFormatOpV1;
+
+export type CollaborationFormatOpV1 = Readonly<{
+  type: 'format'; version: 1; offset: number; count: number;
+}> & (
+  | Readonly<{ scope: 'character'; marks: Readonly<{ bold?: boolean; italic?: boolean; textColor?: string }> }>
+  | Readonly<{ scope: 'paragraph'; marks: Readonly<{ alignment: string }> }>
+);
+
+export interface CollaborationApplyOpsRequestV1 {
+  readonly regionId: string;
+  readonly expectedText: string;
+  readonly origin: string;
+  readonly ops: readonly CollaborationOpV1[];
+}
+
+export type CollaborationApplyOpsResultV1 =
+  | { readonly schemaVersion: 1; readonly ok: true; readonly text: string; readonly revision: number }
+  | { readonly schemaVersion: 1; readonly ok: false; readonly reason: 'region-not-found' | 'expected-text-mismatch' | 'unsupported-text' | 'invalid-offset' };
+
+export interface CollaborationMutationV1 {
+  readonly sequence: number;
+  readonly origin: string;
+  readonly regionId: string;
+  readonly text: string;
+  readonly ops?: readonly CollaborationFormatOpV1[];
+}
+
+export interface CollaborationManifestV1 {
+  readonly schemaVersion: 1;
+  readonly regions: readonly Readonly<{
+    id: string;
+    kind: 'body' | 'cell';
+    text: string;
+    paragraph: Readonly<Record<string, unknown>>;
+    runs: readonly Readonly<{ start: number; end: number; properties: Readonly<Record<string, unknown>> }>[];
+    paragraphs?: readonly Readonly<{
+      id: string;
+      text: string;
+      paragraph: Readonly<Record<string, unknown>>;
+      runs: readonly Readonly<{ start: number; end: number; properties: Readonly<Record<string, unknown>> }>[];
+    }>[];
+    table?: Readonly<Record<string, unknown>>;
+  }>[];
+  readonly resources: readonly Readonly<{ id: string; sha256: string }>[];
+  readonly missing: readonly string[];
+}
+
 export interface CollaborationRegionV1 {
   readonly id: string;
   readonly kind: 'body' | 'cell';
   readonly label: string;
   readonly text: string;
+  readonly importAddress?: string;
 }
 
 export interface CollaborationApplyTextRequestV1 {
@@ -398,6 +483,25 @@ export interface RendererSelectionV1 {
   selectionError: string | null;
 }
 
+export interface CollaborationPresenceV1 {
+  readonly regionId: string;
+  readonly anchorOffset: number;
+  readonly focusOffset: number;
+  readonly anchorRegionId?: string;
+  readonly anchorCellParagraphIndex?: number;
+  readonly focusCellParagraphIndex?: number;
+}
+
+export interface CollaborationRegionRectsV1 {
+  readonly schemaVersion: 1;
+  readonly regionId: string;
+  readonly pages: readonly {
+    readonly pageIndex: number;
+    readonly rects: readonly { readonly x: number; readonly y: number; readonly width: number; readonly height: number }[];
+  }[];
+  readonly missing?: readonly string[];
+}
+
 export interface RendererDiagnosticsV1 {
   schemaVersion: 1;
   request: {
@@ -487,12 +591,27 @@ export declare class RhwpEditor {
   undo(): Promise<HistoryUndoResultV1>;
   /** 현재 iframe을 영구 협업 읽기 전용 모드로 전환합니다. 문서 로드는 계속 허용됩니다. */
   beginCollaboration(): Promise<CollaborationBeginResultV1>;
+  beginLiveCollaboration(): Promise<CollaborationLiveBeginResultV1>;
+  setLivePastePolicy(policy: Readonly<{ epoch: string; writableRegionIds: readonly string[] }>): Promise<void>;
+  configureBodyStructure(configuration: BodyStructureConfiguration): Promise<void>;
+  applyRemoteBodyStructure(request: BodyStructureRemoteRequest): Promise<BodyStructureRemoteResult>;
+  getBodyStructureRequests(): Promise<readonly BodyStructureRequest[]>;
+  onBodyStructureRequest(listener: (request: BodyStructureRequest) => void): () => void;
+  resolveBodyStructure(resolution: BodyStructureResolution): Promise<BodyStructureResult | null>;
   /** 현재 원본 구조에서 지원되는 일반 본문 문단과 최상위 단일 문단 셀을 반환합니다. */
   getCollaborationRegions(): Promise<readonly CollaborationRegionV1[]>;
   /** 서버가 검증한 예상 텍스트와 일치할 때만 한 영역의 실제 문서 텍스트를 교체합니다. */
   applyCollaborationText(
     request: CollaborationApplyTextRequestV1,
   ): Promise<CollaborationApplyTextResultV1>;
+  applyCollaborationOps(
+    request: CollaborationApplyOpsRequestV1,
+  ): Promise<CollaborationApplyOpsResultV1>;
+  getCollaborationManifest(): Promise<CollaborationManifestV1>;
+  getCollaborationRegionRects(request: { readonly regionId: string; readonly selection?: Omit<CollaborationPresenceV1, 'regionId'> }): Promise<CollaborationRegionRectsV1>;
+  getCollaborationPresence(): Promise<CollaborationPresenceV1 | null>;
+  onCollaborationMutation(listener: (mutation: CollaborationMutationV1) => void): () => void;
+  flushCollaborationMutations(): Promise<void>;
   /** 별도 임시 문서에서 HWP/HWPX/HML 참고 텍스트를 제한 추출합니다. */
   extractReferenceText(
     data: ArrayBuffer | Uint8Array,

@@ -93,6 +93,11 @@ export class RhwpEditor {
   constructor(iframe, transport) {
     this._iframe = iframe;
     this._transport = transport;
+    this._collaborationMutationListeners = new Set();
+    this._bodyStructureListeners = new Set();
+    this._bodyStructureDelivered = null;
+    this._collaborationMutationSequence = 0;
+    this._collaborationMutationTimer = null;
   }
 
   /**
@@ -403,7 +408,106 @@ export class RhwpEditor {
     return result;
   }
 
+  async beginLiveCollaboration() {
+    this._requireLiveCollaborationCapability();
+    const result = await this._request('beginLiveCollaboration');
+    if (result?.schemaVersion !== 1 || result?.readOnly !== false
+        || Object.keys(result).length !== 2) {
+      throw new Error('Invalid live collaboration begin result from Studio');
+    }
+    return result;
+  }
+
+  async setLivePastePolicy(policy) {
+    this._requireLiveCollaborationCapability();
+    await this._request('setLivePastePolicy', policy);
+  }
+
+  async configureBodyStructure(configuration) {
+    this._requireLiveCollaborationCapability();
+    await this._request('configureBodyStructure', configuration);
+  }
+
+  async getBodyStructureRequests() {
+    this._requireLiveCollaborationCapability();
+    const result = await this._request('getBodyStructureRequests');
+    if (!Array.isArray(result) || result.length > 1 || !result.every(isBodyStructureRequest))
+      throw new TypeError('Invalid body structure request from Studio');
+    return result;
+  }
+
+  async resolveBodyStructure(resolution) {
+    this._requireLiveCollaborationCapability();
+    const result = await this._request('resolveBodyStructure', resolution);
+    if (result === null && resolution.receipt === null) return null;
+    if (!result || typeof result.applied !== 'boolean' || !Array.isArray(result.tombstones) || !result.tombstones.every(id => typeof id === 'string')
+      || !Array.isArray(result.regions) || !result.regions.every(isCollaborationRegion)
+      || !Array.isArray(result.removedRegionIds) || !result.removedRegionIds.every((id) => typeof id === 'string')
+      || !result.cursor || !['sectionIndex', 'paragraphIndex', 'charOffset'].every((key) =>
+        Number.isSafeInteger(result.cursor[key]) && result.cursor[key] >= 0))
+      throw new TypeError('Invalid body structure result from Studio');
+    return result;
+  }
+
+  async applyRemoteBodyStructure(request) {
+    this._requireLiveCollaborationCapability();
+    const outcome = await this._request('applyRemoteBodyStructure', request);
+    if (outcome?.status === 'deferred' && ['pending', 'composing', 'dirty', 'stale'].includes(outcome.reason)
+      && outcome.recovery === 'reconcile') return outcome;
+    const result = outcome?.result;
+    if (!['applied', 'duplicate'].includes(outcome?.status) || !result
+      || result.applied !== (outcome.status === 'applied')
+      || !Array.isArray(result.tombstones) || !result.tombstones.every(id => typeof id === 'string')
+      || !Array.isArray(result.regions) || !result.regions.every(isCollaborationRegion)
+      || !Array.isArray(result.removedRegionIds) || !result.removedRegionIds.every(id => typeof id === 'string')
+      || !result.cursor || !['sectionIndex', 'paragraphIndex', 'charOffset'].every(key =>
+        Number.isSafeInteger(result.cursor[key]) && result.cursor[key] >= 0))
+      throw new TypeError('Invalid remote body structure result from Studio');
+    return outcome;
+  }
+
+  onBodyStructureRequest(listener) {
+    this._requireLiveCollaborationCapability();
+    if (typeof listener !== 'function') throw new TypeError('listener must be a function');
+    this._bodyStructureListeners.add(listener);
+    this._scheduleCollaborationMutationPoll();
+    return () => this._bodyStructureListeners.delete(listener);
+  }
+
   /** 현재 원본 구조에서 지원되는 협업 텍스트 영역을 반환합니다. */
+  async getCollaborationPresence() {
+    this._requireCollaborationCapability();
+    const result = await this._request('getCollaborationPresence');
+    if (result === null) return null;
+    if (!result || typeof result !== 'object' || Array.isArray(result)
+        || Object.keys(result).some((key) => !['regionId', 'anchorOffset', 'focusOffset', 'anchorRegionId',
+          'anchorCellParagraphIndex', 'focusCellParagraphIndex'].includes(key))
+        || typeof result.regionId !== 'string' || !/^(?:b:\d+:\d+|c:\d+:\d+:\d+:\d+)$/.test(result.regionId)
+        || !isCollaborationSelection(result))
+      throw new TypeError('Invalid collaboration presence from Studio');
+    return result;
+  }
+
+  async getCollaborationRegionRects(request) {
+    this._requireCollaborationCapability();
+    if (!request || typeof request !== 'object' || Array.isArray(request)
+        || Object.keys(request).some((key) => key !== 'regionId' && key !== 'selection') || typeof request.regionId !== 'string'
+        || !/^(?:b:\d+:\d+|c:\d+:\d+:\d+:\d+)$/.test(request.regionId)
+        || !request.regionId.split(':').slice(1).every((part) => Number.isSafeInteger(Number(part)))) {
+      throw Object.assign(new TypeError('invalid-region-id'), { code: 'invalid-region-id' });
+    }
+    if (request.selection !== undefined && (!request.selection || typeof request.selection !== 'object'
+        || Object.keys(request.selection).some((key) => !['anchorOffset', 'focusOffset', 'anchorRegionId',
+          'anchorCellParagraphIndex', 'focusCellParagraphIndex'].includes(key))
+        || !isCollaborationSelection(request.selection)))
+      throw new TypeError('Invalid collaboration selection');
+    const result = await this._request('getCollaborationRegionRects', request);
+    if (!isCollaborationRegionRects(result, request.regionId)) {
+      throw new TypeError('Invalid collaboration region rectangles from Studio');
+    }
+    return result;
+  }
+
   async getCollaborationRegions() {
     this._requireCollaborationCapability();
     const result = await this._request('getCollaborationRegions');
@@ -434,9 +538,92 @@ export class RhwpEditor {
     return result;
   }
 
+  async applyCollaborationOps(request) {
+    this._requireLiveCollaborationCapability();
+    if (!isCollaborationOpsRequest(request)) {
+      throw new TypeError('request must contain regionId, expectedText, origin, and valid ops');
+    }
+    const result = await this._request('applyCollaborationOps', request);
+    if (!isCollaborationOpsResult(result)) {
+      throw new Error('Invalid collaboration ops result from Studio');
+    }
+    return result;
+  }
+
+  async getCollaborationManifest() {
+    this._requireLiveCollaborationCapability();
+    const result = await this._request('getCollaborationManifest');
+    if (!result || result.schemaVersion !== 1 || !Array.isArray(result.regions)
+        || !Array.isArray(result.resources) || !Array.isArray(result.missing)) {
+      throw new Error('Invalid collaboration manifest from Studio');
+    }
+    return result;
+  }
+
+  onCollaborationMutation(listener) {
+    this._requireLiveCollaborationCapability();
+    if (typeof listener !== 'function') throw new TypeError('listener must be a function');
+    this._collaborationMutationListeners.add(listener);
+    this._scheduleCollaborationMutationPoll();
+    return () => {
+      this._collaborationMutationListeners.delete(listener);
+      if (this._collaborationMutationListeners.size === 0
+          && this._bodyStructureListeners.size === 0
+          && this._collaborationMutationTimer !== null) {
+        clearTimeout(this._collaborationMutationTimer);
+        this._collaborationMutationTimer = null;
+      }
+    };
+  }
+
+  async flushCollaborationMutations() {
+    this._requireLiveCollaborationCapability();
+    if (this._collaborationMutationPoll) return this._collaborationMutationPoll;
+    this._collaborationMutationPoll = (async () => {
+      const mutations = await this._request('getCollaborationMutations', { afterSequence: this._collaborationMutationSequence });
+      if (!Array.isArray(mutations) || !mutations.every(isCollaborationMutation))
+        throw new Error('Invalid collaboration mutations from Studio');
+      for (const mutation of mutations) {
+        this._collaborationMutationSequence = Math.max(this._collaborationMutationSequence, mutation.sequence);
+        for (const listener of this._collaborationMutationListeners) listener(mutation);
+      }
+      if (this._bodyStructureListeners.size) {
+        for (const request of await this.getBodyStructureRequests()) {
+          if (this._bodyStructureDelivered === request.planId) continue;
+          this._bodyStructureDelivered = request.planId;
+          for (const listener of this._bodyStructureListeners) listener(request);
+        }
+      }
+    })();
+    try { await this._collaborationMutationPoll; }
+    finally { this._collaborationMutationPoll = null; }
+  }
+
+  _scheduleCollaborationMutationPoll() {
+    if (this._collaborationMutationTimer !== null
+        || (this._collaborationMutationListeners.size === 0 && this._bodyStructureListeners.size === 0)) return;
+    this._collaborationMutationTimer = setTimeout(async () => {
+      this._collaborationMutationTimer = null;
+      try {
+        await this.flushCollaborationMutations();
+      } catch (error) {
+        if (this._collaborationMutationListeners.size > 0 || this._bodyStructureListeners.size > 0) {
+          queueMicrotask(() => { throw error; });
+        }
+      }
+      this._scheduleCollaborationMutationPoll();
+    }, 25);
+  }
+
   _requireCollaborationCapability() {
     if (!this._transport.supports('collaboration-text-v1')) {
       throw new Error('Collaboration text v1 is not supported by this Studio');
+    }
+  }
+
+  _requireLiveCollaborationCapability() {
+    if (!this._transport.supports('collaboration-live-v1')) {
+      throw new Error('Collaboration live v1 is not supported by this Studio');
     }
   }
 
@@ -490,9 +677,39 @@ export class RhwpEditor {
    * 에디터를 제거합니다.
    */
   destroy() {
+    if (this._collaborationMutationTimer !== null) {
+      clearTimeout(this._collaborationMutationTimer);
+      this._collaborationMutationTimer = null;
+    }
+    this._collaborationMutationListeners.clear();
+    this._bodyStructureListeners.clear();
     this._transport.destroy();
     this._iframe.remove();
   }
+}
+
+function isCollaborationSelection(value) {
+  return [value.anchorOffset, value.focusOffset].every((offset) => Number.isSafeInteger(offset) && offset >= 0)
+    && [value.anchorCellParagraphIndex, value.focusCellParagraphIndex]
+      .every((index) => index === undefined || (Number.isSafeInteger(index) && index >= 0))
+    && (value.anchorRegionId === undefined || (typeof value.anchorRegionId === 'string'
+      && /^(?:b:\d+:\d+|c:\d+:\d+:\d+:\d+)$/.test(value.anchorRegionId)
+      && value.anchorRegionId.split(':').slice(1).every((part) => Number.isSafeInteger(Number(part)))));
+}
+
+function isCollaborationRegionRects(value, regionId) {
+  return value !== null && typeof value === 'object' && value.schemaVersion === 1
+    && value.regionId === regionId && Array.isArray(value.pages)
+    && (value.missing === undefined || (Array.isArray(value.missing)
+      && value.missing.length > 0 && value.missing.every((reason) => typeof reason === 'string' && reason.length > 0)))
+    && (value.pages.length > 0 || value.missing?.length > 0)
+    && new Set(value.pages.map((page) => page?.pageIndex)).size === value.pages.length
+    && value.pages.every((page) => page !== null && typeof page === 'object'
+      && Number.isSafeInteger(page.pageIndex) && page.pageIndex >= 0
+      && Array.isArray(page.rects) && page.rects.length > 0
+      && page.rects.every((rect) => rect !== null && typeof rect === 'object'
+        && [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite)
+        && rect.width >= 0 && rect.height > 0));
 }
 
 function isPlainCollaborationText(value) {
@@ -503,13 +720,19 @@ function isCollaborationRegion(value) {
   return value !== null
     && typeof value === 'object'
     && !Array.isArray(value)
-    && Object.keys(value).length === 4
+    && Object.keys(value).every((key) => ['id', 'kind', 'label', 'text', 'importAddress'].includes(key))
     && typeof value.id === 'string'
-    && /^(?:b:\d+:\d+|c:\d+:\d+:\d+:\d+)$/u.test(value.id)
+    && (/^(?:b:\d+:\d+|c:\d+:\d+:\d+:\d+)$/u.test(value.id)
+      || /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value.id))
+    && (value.importAddress === undefined || (typeof value.importAddress === 'string'
+      && /^(?:b:\d+:\d+|c:\d+:\d+:\d+:\d+)$/u.test(value.importAddress)))
     && (value.kind === 'body' || value.kind === 'cell')
     && typeof value.label === 'string'
     && typeof value.text === 'string'
-    && isPlainCollaborationText(value.text);
+    && value.text.length <= 20_000
+    && (value.kind === 'cell'
+      ? value.text.split('\n').every(isPlainCollaborationText)
+      : isPlainCollaborationText(value.text));
 }
 
 function isCollaborationApplyResult(value) {
@@ -530,4 +753,47 @@ function isCollaborationApplyResult(value) {
       'unsupported-text',
       'unsupported-region',
     ].includes(value.reason);
+}
+
+function isCollaborationOpsRequest(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && typeof value.regionId === 'string' && value.regionId.length > 0
+    && typeof value.expectedText === 'string'
+    && typeof value.origin === 'string' && value.origin.length > 0
+    && Array.isArray(value.ops) && value.ops.length > 0 && value.ops.length <= 1_000
+    && value.ops.every((op) => op !== null && typeof op === 'object' && !Array.isArray(op)
+      && Number.isSafeInteger(op.offset)
+      && (op.type === 'insert' ? typeof op.text === 'string' : op.type === 'format'
+        ? op.version === 1 && Number.isSafeInteger(op.count) && ['character', 'paragraph'].includes(op.scope)
+          && op.marks !== null && typeof op.marks === 'object' && !Array.isArray(op.marks)
+        : op.type === 'delete' && Number.isSafeInteger(op.count)));
+}
+
+function isCollaborationOpsResult(value) {
+  if (value?.schemaVersion !== 1 || typeof value.ok !== 'boolean') return false;
+  return value.ok
+    ? typeof value.text === 'string' && Number.isSafeInteger(value.revision)
+    : ['region-not-found', 'expected-text-mismatch', 'unsupported-text', 'invalid-offset']
+      .includes(value.reason);
+}
+
+function isCollaborationMutation(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Number.isSafeInteger(value.sequence) && value.sequence > 0
+    && typeof value.origin === 'string' && value.origin.length > 0
+    && typeof value.regionId === 'string' && typeof value.text === 'string';
+}
+
+function isBodyStructureRequest(value) {
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const id = (candidate) => typeof candidate === 'string' && uuid.test(candidate);
+  const offset = (candidate) => Number.isSafeInteger(candidate) && candidate >= 0;
+  const endpoint = (candidate) => candidate && id(candidate.regionId) && offset(candidate.offset);
+  const operation = value?.operation;
+  return value && id(value.planId) && operation?.version === 1 && id(operation.epoch)
+    && operation.operationId === value.planId && offset(operation.topologyRevision) && offset(operation.durableAck)
+    && endpoint(operation.start) && endpoint(operation.end) && typeof operation.text === 'string'
+    && operation.text.length <= 200000 && Array.isArray(operation.expectedRevisions)
+    && operation.expectedRevisions.length > 0 && operation.expectedRevisions.length <= 500
+    && operation.expectedRevisions.every((entry) => id(entry?.regionId) && offset(entry.revision));
 }

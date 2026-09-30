@@ -149,6 +149,11 @@ export class MenuBar {
       const cmdId = el.dataset.cmd!;
       const enabled = this.dispatcher.isEnabled(cmdId);
       el.classList.toggle('disabled', !enabled);
+      const reason = this.dispatcher.disabledReason(cmdId);
+      if (reason) {
+        el.title = reason;
+        el.setAttribute('aria-description', reason);
+      }
       if (cmdId === 'file:save') {
         el.removeAttribute('title');
       }
