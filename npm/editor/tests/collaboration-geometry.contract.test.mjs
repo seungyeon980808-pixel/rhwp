@@ -104,7 +104,7 @@ test('reports missing layout when an existing region has no rectangles', () => {
   assert.deepEqual(result.missing, ['layout-rectangles-unavailable']);
 });
 
-test('measures cell text through the existing cell selection API', () => {
+test('measures a cell text selection through the existing cell selection API', () => {
   // Given: a single-paragraph cell with two layout lines.
   const calls = [];
   const wasm = {
@@ -118,8 +118,9 @@ test('measures cell text through the existing cell selection API', () => {
       ];
     },
   };
-  // When: the whole cell region is measured.
-  const result = getCollaborationRegionRects({ regionId: 'c:0:5:2:3' }, {
+  // When: selected text is measured, independently of the cell boundary.
+  const result = getCollaborationRegionRects({ regionId: 'c:0:5:2:3',
+    selection: { anchorOffset: 0, focusOffset: 8 } }, {
     regions: [{ id: 'c:0:5:2:3', kind: 'cell', label: 'cell', text: 'abcdefgh' }], wasm, zoom: 1,
   });
   // Then: the cell address and both line rectangles are preserved.
@@ -128,4 +129,49 @@ test('measures cell text through the existing cell selection API', () => {
     { x: 20, y: 40, width: 70, height: 14 },
     { x: 20, y: 54, width: 25, height: 14 },
   ] }]);
+});
+
+test('encloses an empty merged cell using its native boundary on every page', () => {
+  const calls = [];
+  const wasm = {
+    getTableCellBboxes(...args) {
+      calls.push(args);
+      return [
+        { cellIdx: 4, pageIndex: 1, x: 0, y: 0, w: 30, h: 20 },
+        { cellIdx: 3, row: 0, col: 0, rowSpan: 2, colSpan: 3, pageIndex: 1, x: 20, y: 40, w: 270, h: 180 },
+        { cellIdx: 3, row: 0, col: 0, rowSpan: 2, colSpan: 3, pageIndex: 2, x: 20, y: 10, w: 270, h: 80 },
+      ];
+    },
+    getCellParagraphCount() { throw new Error('Empty cells must not depend on text geometry'); },
+    getSelectionRectsInCell() { throw new Error('No text rectangles for cell boundaries'); },
+  };
+  const result = getCollaborationRegionRects({ regionId: 'c:0:5:2:3' }, {
+    regions: [{ id: 'c:0:5:2:3', kind: 'cell', label: 'cell', text: '' }], wasm, zoom: 1.5,
+  });
+  assert.deepEqual(calls, [[0, 5, 2, 0]]);
+  assert.deepEqual(result.pages, [
+    { pageIndex: 1, rects: [{ x: 30, y: 60, width: 405, height: 270 }] },
+    { pageIndex: 2, rects: [{ x: 30, y: 15, width: 405, height: 120 }] },
+  ]);
+  assert.equal(result.missing, undefined);
+});
+
+test('reports missing cell boundaries without falling back to text or a different cell', () => {
+  const result = getCollaborationRegionRects({ regionId: 'c:0:5:2:3' }, {
+    regions: [{ id: 'c:0:5:2:3', kind: 'cell', label: 'cell', text: 'text' }],
+    wasm: { getTableCellBboxes: () => [{ cellIdx: 4, pageIndex: 0, x: 0, y: 0, w: 40, h: 40 }] }, zoom: 1,
+  });
+  assert.deepEqual(result.pages, []);
+  assert.deepEqual(result.missing, ['layout-rectangles-unavailable']);
+});
+
+test('cell carets remain at their text position rather than using the cell boundary', () => {
+  const result = getCollaborationRegionRects({ regionId: 'c:0:5:2:3',
+    selection: { anchorOffset: 2, focusOffset: 2 } }, {
+    regions: [{ id: 'c:0:5:2:3', kind: 'cell', label: 'cell', text: 'text' }], zoom: 2,
+    wasm: { getCellParagraphCount: () => 1, getCellParagraphLength: () => 4,
+      getCursorRectInCell: () => ({ pageIndex: 0, x: 30, y: 40, height: 12 }),
+      getTableCellBboxes() { throw new Error('Caret must use text geometry'); } },
+  });
+  assert.deepEqual(result.pages, [{ pageIndex: 0, rects: [{ x: 60, y: 80, width: 0, height: 24 }] }]);
 });

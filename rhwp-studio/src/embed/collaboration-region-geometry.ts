@@ -66,7 +66,7 @@ export function parseCollaborationGeometryRequest(value: unknown): Collaboration
 
 type GeometrySource = Pick<WasmBridge,
   'getParagraphLength' | 'getCellParagraphLength' | 'getCellParagraphCount' | 'getSelectionRects'
-  | 'getSelectionRectsInCell' | 'getCursorRect' | 'getCursorRectInCell'>;
+  | 'getSelectionRectsInCell' | 'getCursorRect' | 'getCursorRectInCell' | 'getTableCellBboxes'>;
 
 export interface CollaborationGeometryContext {
   readonly wasm: GeometrySource;
@@ -112,6 +112,15 @@ export function getCollaborationRegionRects(
       const ctrl = Number(control);
       const idx = Number(cell);
       if (anchorId !== region.id) throw new CollaborationGeometryError('unsupported-geometry');
+      if (!request.selection) {
+        // Region presence encloses the complete cell, including whitespace and merged-cell
+        // geometry. Text selection and caret requests retain their separate text rectangles.
+        rects = wasm.getTableCellBboxes(sec, para, ctrl, 0)
+          .filter((bbox) => bbox.cellIdx === idx)
+          .map((bbox) => ({ pageIndex: bbox.pageIndex, x: bbox.x, y: bbox.y,
+            width: bbox.w, height: bbox.h }));
+        break;
+      }
       const count = wasm.getCellParagraphCount(sec, para, ctrl, idx);
       const anchorPara = request.selection?.anchorCellParagraphIndex ?? 0;
       const focusPara = request.selection ? (request.selection.focusCellParagraphIndex ?? 0) : count - 1;

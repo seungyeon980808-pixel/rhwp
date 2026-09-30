@@ -15,6 +15,8 @@ function context(): CollaborationGeometryContext {
       getParagraphLength: () => 10,
       getCellParagraphLength: () => 6,
       getCellParagraphCount: () => 2,
+      getTableCellBboxes: () => [{ cellIdx: 0, row: 0, col: 0, rowSpan: 1, colSpan: 1,
+        pageIndex: 0, x: 2, y: 10, w: 120, h: 80 }],
       getCursorRect: () => ({ pageIndex: 0, x: 2, y: 3, height: 4 }),
       getCursorRectInCell: (_sec, _para, _ctrl, _cell, paragraph, offset) => ({ pageIndex: paragraph, x: offset, y: 20, height: 10 }),
       getSelectionRects: (_sec, startPara, startOffset, endPara, endOffset) => [
