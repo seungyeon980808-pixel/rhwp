@@ -1,5 +1,6 @@
 import { WasmBridge } from '@/core/wasm-bridge';
 import { UnsupportedLiveStructureError } from '../embed/collaboration-structure-boundary';
+import { collaborationEditRegions } from '../embed/collaboration-edit-permissions';
 import { remapCollaborationTextPosition, type CollaborationTextChange } from '../embed/collaboration-text-position';
 import type { DeferredFocusedPagePatch } from '@/core/wasm-bridge';
 import { EventBus } from '@/core/event-bus';
@@ -3768,12 +3769,31 @@ export class InputHandler {
     return pos.charOffset >= start && pos.charOffset <= end;
   }
 
+  /** Use the authoritative live whitelist for typing, IME, deletion and toolbar commands. */
+  canEditLiveSelection(position?: DocumentPosition): boolean {
+    if (!this.wasm.isLiveStructureRestricted?.()) return true;
+    const epoch = this.wasm.getLivePasteEpoch?.();
+    if (!epoch || this.cursor.isInHeaderFooter() || this.cursor.isInFootnote()
+      || this.cursor.isInTableObjectSelection() || this.isInPictureObjectSelection()) return false;
+    try {
+      const block = this.getSelectedCellBlock();
+      if (block) return !block.cellPath && block.cellIndices.length > 0 && block.cellIndices.every(index =>
+        this.wasm.canPasteLiveRegion(`c:${block.sec}:${block.ppi}:${block.ci}:${index}`, epoch));
+      const selected = this.cursor.getSelectionOrdered();
+      const current = position ?? this.cursor.getPosition();
+      const regions = collaborationEditRegions(selected?.start ?? current, selected?.end ?? current);
+      return regions !== null && regions.length > 0 && regions.every(id => this.wasm.canPasteLiveRegion(id, epoch));
+    } catch { return false; }
+  }
+
   canInsertTextInFormMode(pos: DocumentPosition): boolean {
+    if (!this.canEditLiveSelection(pos)) return false;
     if (this.editMode !== 'form') return true;
     return this.isEditableFormFieldPosition(pos);
   }
 
   canDeleteTextInFormMode(pos: DocumentPosition, count: number): boolean {
+    if (!this.canEditLiveSelection(pos)) return false;
     if (this.editMode !== 'form') return true;
     const fi = this.getFormFieldInfoAt(pos);
     if (!fi?.editableInForm) return false;
@@ -3783,6 +3803,7 @@ export class InputHandler {
   }
 
   canDeleteSelectionInFormMode(): boolean {
+    if (!this.canEditLiveSelection()) return false;
     if (this.editMode !== 'form') return true;
     const sel = this.cursor.getSelectionOrdered();
     if (!sel) return this.canEditCurrentFormField();
@@ -3893,6 +3914,7 @@ export class InputHandler {
   }
 
   private isOperationAllowedInEditMode(desc: OperationDescriptor): boolean {
+    if (desc.kind !== 'record' && !this.canEditLiveSelection()) return false;
     if (this.editMode !== 'form') return true;
     // [Task #2337-review] kind:'record' 는 이미 적용된 뮤테이션을 히스토리에 기록만 한다.
     // form mode 에서 이를 드롭하면 그 뮤테이션이 undo 불가한 미기록 편집으로 남아(더블클릭

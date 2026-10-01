@@ -221,6 +221,7 @@ function tryDeleteBodyFootnoteAtCursor(
 }
 
 export function handleBackspace(this: any, pos: DocumentPosition, inCell: boolean): void {
+  if (this.canEditLiveSelection?.(pos) === false) return;
   if (this.isFormMode?.() && !this.canEditCurrentFormField?.()) return;
   // 머리말/꼬리말 편집 모드
   if (this.cursor.isInHeaderFooter()) {
@@ -288,6 +289,7 @@ export function handleBackspace(this: any, pos: DocumentPosition, inCell: boolea
 }
 
 export function handleDelete(this: any, pos: DocumentPosition, inCell: boolean): void {
+  if (this.canEditLiveSelection?.(pos) === false) return;
   if (this.isFormMode?.() && !this.canEditCurrentFormField?.()) return;
   // 머리말/꼬리말 편집 모드
   if (this.cursor.isInHeaderFooter()) {
@@ -363,6 +365,10 @@ export function handleDelete(this: any, pos: DocumentPosition, inCell: boolean):
 }
 
 export function onCompositionStart(this: any): void {
+  if (this.canEditLiveSelection?.() === false) {
+    this.textarea.value = ''; this.isComposing = false; this.compositionAnchor = null; this.compositionLength = 0;
+    return;
+  }
   this.resetRawTextMutationEffects();
   // 선택 영역이 있으면 삭제 후 조합 시작
   if (this.cursor.hasSelection()) {
@@ -472,6 +478,7 @@ export function getTextAt(this: any, pos: DocumentPosition, count: number): stri
 
 export function onInput(this: any, e?: InputEvent): void {
   if (!this.active) return;
+  if (this.canEditLiveSelection?.() === false) { this.textarea.value = ''; return; }
 
   const text = this.textarea.value;
   // const inputType = e?.inputType ?? 'unknown';
