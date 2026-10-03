@@ -1,6 +1,7 @@
 import type { WasmBridge } from '../core/wasm-bridge.ts';
 import type { CollaborationTextAdapter } from './collaboration-text-adapter.ts';
 import type { CollaborationRegionV1 } from './collaboration-text-contract.ts';
+import { decodeCollaborationParagraph } from './collaboration-text-validation.ts';
 
 export type BodyStructureEndpoint = Readonly<{ regionId: string; offset: number }>;
 export type BodyStructureIntent = Readonly<{
@@ -146,7 +147,7 @@ export class CollaborationBodyStructureAdapter {
     const snapshot = this.wasm.saveSnapshot();
     try {
       this.wasm.replaceLiveBodyRange(plan.section, plan.startParagraph, plan.startScalar,
-        plan.endParagraph, plan.endScalar, plan.operation.text, plan.selected.map((region) => region.text), this.remote.has(plan) ? 'remote' : 'local');
+        plan.endParagraph, plan.endScalar, plan.operation.text, plan.selected.map((region) => decodeCollaborationParagraph(region.text)), this.remote.has(plan) ? 'remote' : 'local');
       this.catalog.remapStructure(mapping);
       const regions = this.catalog.getRegionsSync();
       if (regions.length !== mapping.length || replacementRegionIds.some((id, index) => regions.find((region) => region.id === id)?.text !== plan.paragraphs[index])

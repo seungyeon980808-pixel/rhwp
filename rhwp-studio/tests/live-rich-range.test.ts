@@ -60,8 +60,8 @@ for (const cell of [false, true]) for (const rich of [false, true]) test(`native
         if (rich) assert.equal(region.runs[0]?.properties.bold, true);
       } finally { restored.wasm.releaseDocument(); }
     }
-    assert.equal((await a.catalog.getRegions()).length, 136);
-    console.log(JSON.stringify({ scenario: `${cell ? 'cell' : 'body'}-${rich ? 'rich' : 'plain'}-range`, mutation, remote: after, catalog: 136, exports: ['hwp', 'hwpx'] }));
+    assert.equal((await a.catalog.getRegions()).length, 138);
+    console.log(JSON.stringify({ scenario: `${cell ? 'cell' : 'body'}-${rich ? 'rich' : 'plain'}-range`, mutation, remote: after, catalog: 138, exports: ['hwp', 'hwpx'] }));
   } finally { a.wasm.releaseDocument(); b.wasm.releaseDocument(); }
 });
 
@@ -163,6 +163,6 @@ test('simultaneous native replacement and bold publishes marks with changed text
     console.log(JSON.stringify({ scenario: 'native-rich-range-capture', mutation, bold: wasm.getCharPropertiesAt(0, 14, 0).bold }));
     assert.ok(mutation?.text.startsWith('RICH'));
     assert.ok(mutation.ops?.some((op) => op.scope === 'character' && op.offset === 0 && op.marks.bold === true));
-    assert.equal((await catalog.getRegions()).length, 136);
+    assert.equal((await catalog.getRegions()).length, 138);
   } finally { wasm.releaseDocument(); }
 });

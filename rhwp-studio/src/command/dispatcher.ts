@@ -48,6 +48,7 @@ export class CommandDispatcher {
       return false;
     }
 
+    if (this.services.wasm?.hasRestrictedPromptSpaces?.() && commandId.startsWith("format:align-")) return false;
     const ctx = this.services.getContext();
     if (isBlockedInFormMode(commandId, ctx) || isUnsupportedLiveFormat(commandId, ctx.isLiveCollaboration === true)
       || isUnsupportedLiveStructure(commandId, ctx.isLiveCollaboration === true)) {
@@ -76,6 +77,7 @@ export class CommandDispatcher {
   isEnabled(commandId: string): boolean {
     const def = this.registry.get(commandId);
     if (!def) return false;
+    if (this.services.wasm?.hasRestrictedPromptSpaces?.() && commandId.startsWith("format:align-")) return false;
     const ctx = this.services.getContext();
     if (isBlockedInFormMode(commandId, ctx) || isUnsupportedLiveFormat(commandId, ctx.isLiveCollaboration === true)
       || isUnsupportedLiveStructure(commandId, ctx.isLiveCollaboration === true)) return false;

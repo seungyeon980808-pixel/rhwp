@@ -112,7 +112,7 @@ export function getCollaborationRegionRects(
       const ctrl = Number(control);
       const idx = Number(cell);
       if (anchorId !== region.id) throw new CollaborationGeometryError('unsupported-geometry');
-      if (!request.selection) {
+      if (!request.selection || region.structured) {
         // Region presence encloses the complete cell, including whitespace and merged-cell
         // geometry. Text selection and caret requests retain their separate text rectangles.
         rects = wasm.getTableCellBboxes(sec, para, ctrl, 0)

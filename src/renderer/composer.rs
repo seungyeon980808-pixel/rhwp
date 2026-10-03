@@ -1116,7 +1116,7 @@ pub(crate) fn split_runs_by_lang(runs: Vec<ComposedTextRun>) -> Vec<ComposedText
         let initial_lang = chars
             .iter()
             .map(|&c| detect_lang_category(c))
-            .find(|&lang| lang != 0 || chars.iter().all(|&c| detect_lang_category(c) == 0))
+            .find(|&lang| lang != 0)
             .unwrap_or(0);
 
         let mut current_lang = initial_lang;
@@ -2888,3 +2888,43 @@ mod lineseg_compare_tests;
 mod re_sample_gen;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod linear_initial_language_tests {
+    use super::*;
+
+    #[test]
+    fn all_korean_and_late_latin_preserve_neutral_language_inheritance() {
+        let korean = "가나다 ".repeat(500);
+        for suffix in ["", "Latin!?", "漢字", "かな"] {
+            let text = format!(" !{korean}{suffix}");
+            let run = ComposedTextRun {
+                text: text.clone(),
+                char_style_id: 3,
+                lang_index: 0,
+                char_overlap: None,
+                footnote_marker: None,
+                display_text: None,
+            };
+            let result = split_runs_by_lang(vec![run]);
+            assert_eq!(
+                result
+                    .iter()
+                    .map(|run| run.text.as_str())
+                    .collect::<String>(),
+                text
+            );
+            assert!(result.iter().all(|run| run.char_style_id == 3));
+            if suffix.is_empty() {
+                assert_eq!(result.len(), 1);
+                assert_eq!(result[0].lang_index, 0);
+            } else {
+                let lang = detect_lang_category(suffix.chars().next().unwrap());
+                assert_eq!(result.len(), 3);
+                assert_eq!((&*result[0].text, result[0].lang_index), (" !", lang));
+                assert_eq!((&*result[1].text, result[1].lang_index), (&*korean, 0));
+                assert_eq!((&*result[2].text, result[2].lang_index), (suffix, lang));
+            }
+        }
+    }
+}

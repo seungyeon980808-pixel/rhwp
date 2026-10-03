@@ -51,9 +51,11 @@ function createHarness(withNeighbor = false) {
   const cellTexts = ['beta', 'gamma'];
   let revision = 3;
   let bodyParagraphIndex = 2;
+  let structureChanged = false;
   const applied = [];
   const currentInspection = () => {
     const current = inspection(bodyParagraphIndex, withNeighbor);
+    if (structureChanged) current.structureDigest = `sha256:${'9'.repeat(64)}`;
     if (withNeighbor) {
       current.bodyCandidates[0].adjacentLabelDigest = `sha256:${bodyTexts[1].padEnd(64, '3').slice(0, 64)}`;
       current.bodyCandidates[1].adjacentLabelDigest = `sha256:${bodyTexts[0].padEnd(64, '3').slice(0, 64)}`;
@@ -106,9 +108,28 @@ function createHarness(withNeighbor = false) {
   return {
     adapter,
     applied,
+    setCellText: (text: string) => { cellTexts[0] = text; },
+    changeStructure: () => { structureChanged = true; },
     setBodyParagraphIndex: (paragraphIndex: number) => { bodyParagraphIndex = paragraphIndex; },
   };
 }
+
+test('geometry retains the whole cell when a local line break excludes its plain text', async () => {
+  const { adapter, setCellText } = createHarness();
+  await adapter.getRegions();
+  setCellText('beta\u000bgamma');
+  assert.equal((await adapter.getRegions()).some(region => region.id === 'c:0:4:0:1'), false);
+  assert.deepEqual(adapter.getGeometryRegions().find(region => region.id === 'c:0:4:0:1'),
+    { id: 'c:0:4:0:1', kind: 'cell', label: 'Cell 1.5.1.2', text: '' });
+  assert.equal((await adapter.getRegions()).some(region => region.id === 'c:0:4:0:1'), false);
+});
+
+test('geometry does not retain addresses after an unmapped structural change', async () => {
+  const { adapter, changeStructure } = createHarness();
+  await adapter.getRegions();
+  changeStructure();
+  assert.deepEqual(adapter.getGeometryRegions(), []);
+});
 
 test('collaboration adapter inspects only frozen safe plain body and single-paragraph cell regions', async () => {
   // Given: approved-template inspection with one safe body and one safe cell.
@@ -409,4 +430,15 @@ test('ordinary embed mutation remains available when collaboration mode is off',
 
   // Then: the existing mutation handler runs unchanged.
   assert.deepEqual(result, { ok: true });
+});
+
+
+test('single-region text reads reuse the approved catalog and return current text only', async () => {
+  const harness = createHarness(true);
+  const regions = harness.adapter.getRegionsSync();
+  const cell = regions.find(region => region.kind === 'cell')!;
+  harness.setCellText('current local draft');
+  assert.equal(harness.adapter.getRegionText(cell.id)?.text, 'current local draft');
+  assert.equal(harness.adapter.getRegionText('c:99:99:99:99'), null);
+  assert.equal(harness.applied.length, 0);
 });

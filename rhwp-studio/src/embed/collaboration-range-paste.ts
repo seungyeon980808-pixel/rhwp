@@ -1,10 +1,11 @@
+import { encodeCollaborationParagraph } from './collaboration-text-validation.ts';
 import type { DocumentPosition } from '../core/types.ts';
 import type { WasmBridge } from '../core/wasm-bridge.ts';
 import type { CollaborationManifestRegionV1 } from './collaboration-live-contract.ts';
 import { groupRuns } from './collaboration-live-adapter.ts';
 import { formatOperations } from './collaboration-format.ts';
 
-export type LivePastePolicy = Readonly<{ epoch: string; writableRegionIds: readonly string[] }>;
+export type LivePastePolicy = Readonly<{ epoch: string; writableRegionIds: readonly string[]; promptPolicy?: Readonly<{ memberId: string | null; spaces: readonly Readonly<{ id: string; regionId: string; start: number; end: number; memberId: string | null }>[]; texts: readonly Readonly<{ regionId: string; text: string }>[] }> }>;
 type Marks = Readonly<{ bold: boolean; italic: boolean; textColor?: string }>;
 type Run = Readonly<{ text: string; marks?: Marks }>;
 export type LivePastePlan = Readonly<{ start: DocumentPosition; end: DocumentPosition; epoch: string; offset: number; count: number; runs: readonly Run[]; expectedText: string }>;
@@ -31,6 +32,7 @@ export function planLivePaste(wasm: WasmBridge, input: Readonly<{
     throw new LivePasteError('한 문단 또는 한 셀 문단 안의 범위를 선택하세요');
   const epoch = wasm.getLivePasteEpoch();
   if (!epoch || !wasm.canPasteLiveRegion(id, epoch)) throw new LivePasteError('현재 영역의 편집 권한 또는 문서 버전을 확인할 수 없습니다');
+  if (wasm.canEditPromptSelection?.(input.start, input.end) === false) throw new LivePasteError('담당 작성 구간 밖의 선택');
   const start = input.start;
   const expectedText = pasteManifest(wasm, start).text;
   const offset = selectionOffset(expectedText, start);
@@ -58,10 +60,13 @@ function selectionOffset(text: string, position: DocumentPosition): number {
 }
 
 function paragraphText(wasm: WasmBridge, start: DocumentPosition): string {
-  return start.parentParaIndex === undefined
+  const nativeText = start.parentParaIndex === undefined
     ? wasm.getTextRange(start.sectionIndex, start.paragraphIndex, 0, wasm.getParagraphLength(start.sectionIndex, start.paragraphIndex))
     : wasm.getTextInCell(start.sectionIndex, start.parentParaIndex, start.controlIndex ?? 0, start.cellIndex ?? 0, start.cellParaIndex ?? 0, 0,
       wasm.getCellParagraphLength(start.sectionIndex, start.parentParaIndex, start.controlIndex ?? 0, start.cellIndex ?? 0, start.cellParaIndex ?? 0));
+  const encoded = encodeCollaborationParagraph(nativeText);
+  if (encoded === null) throw new LivePasteError('지원하지 않는 개체 또는 텍스트');
+  return encoded;
 }
 
 export function parseLivePasteHtml(html: string, multiline = false): readonly Run[] {

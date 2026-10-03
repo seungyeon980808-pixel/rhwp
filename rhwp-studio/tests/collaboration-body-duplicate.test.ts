@@ -32,7 +32,7 @@ test('duplicate A leaves pending B and the current document revision untouched',
     assert.equal(host.requests()[0]?.planId, next.planId);
     const merged = host.resolve({ planId: next.planId, receipt: { operation: next.operation, actorKey: 'test',
       durableAck: 2, topologyRevision: 2, regionIds: [request.operation.start.regionId], removedRegionIds: [receipt.regionIds[1]] } });
-    assert.equal(merged?.regions.length, 136);
+    assert.equal(merged?.regions.length, 138);
     assert.deepEqual(merged?.tombstones, [receipt.regionIds[1]]);
   } finally { wasm.releaseDocument(); }
 });

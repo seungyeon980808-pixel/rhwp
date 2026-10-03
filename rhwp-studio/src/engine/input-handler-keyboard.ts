@@ -432,6 +432,14 @@ const chordMapG: Record<string, string> = {
  */
 export function onKeyDown(this: any, e: KeyboardEvent): void {
   if (!this.active) return;
+  if (this.wasm?.hasPromptSpaces?.()) {
+    const selected = this.cursor.getSelectionOrdered();
+    const pos = this.cursor.getPosition();
+    const direction = e.key === 'Backspace' ? -1 : e.key === 'Delete' ? 1 : 0;
+    if (direction && !this.wasm.canEditPromptSelection(selected?.start ?? pos, selected?.end ?? pos, direction)) {
+      e.preventDefault(); return;
+    }
+  }
 
   // ─── 1. 코드 단축키 2번째 키 처리 (Ctrl+K → ? / Ctrl+M → ?) ───
   if (this._pendingChordK) {
@@ -1254,12 +1262,14 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     case 'Enter': {
       e.preventDefault();
       if (this.isFormMode?.()) return;
-      if (this.wasm.isLiveStructureRestricted?.() && ((!e.shiftKey && !inCell) || this.cursor.hasSelection())) {
+      // Keep the stable body paragraph anchor while allowing its writing area to grow.
+      const promptBodyLine = !inCell && Boolean(this.wasm.hasPromptSpaces?.());
+      if (this.wasm.isLiveStructureRestricted?.() && ((!e.shiftKey && !inCell && !promptBodyLine) || this.cursor.hasSelection())) {
         window.alert(unsupportedLiveStructureReason);
         return;
       }
       if (this.cursor.hasSelection()) this.deleteSelection();
-      if (e.shiftKey) {
+      if (e.shiftKey || promptBodyLine) {
         // Shift+Enter: 강제 줄바꿈 (문단 유지, 줄만 바꿈)
         this.executeOperation({ kind: 'command', command: new InsertLineBreakCommand(this.cursor.getPosition()) });
       } else if (inCell) {

@@ -17,11 +17,11 @@ const src = (rel: string) => readFileSync(join(rootDir, rel), 'utf8');
 
 test('afterEdit 이 document-mutated·document-changed 를 모두 emit 한다(전제)', () => {
   const ih = src('src/engine/input-handler.ts');
-  const idx = ih.indexOf("this.eventBus.emit('document-mutated', 'input-handler-edit');");
+  const idx = ih.indexOf("this.eventBus.emit('document-mutated', 'input-handler-edit', dirtyRegions);");
   assert.notEqual(idx, -1, 'afterEdit 의 document-mutated emit');
   assert.match(
     ih.slice(idx, idx + 200),
-    /emit\('document-changed'\)/,
+    /emit\('document-changed', 'input-handler-edit', dirtyRegions\)/,
     'afterEdit 은 document-changed 도 이어서 emit 한다',
   );
 });

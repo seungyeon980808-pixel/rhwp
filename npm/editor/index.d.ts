@@ -201,8 +201,10 @@ export interface CollaborationRegionV1 {
   readonly id: string;
   readonly kind: 'body' | 'cell';
   readonly label: string;
+  /** VT (U+000B) preserves a soft line break; LF separates cell paragraphs. */
   readonly text: string;
   readonly importAddress?: string;
+  readonly structured?: true;
 }
 
 export interface CollaborationApplyTextRequestV1 {
@@ -592,13 +594,16 @@ export declare class RhwpEditor {
   /** 현재 iframe을 영구 협업 읽기 전용 모드로 전환합니다. 문서 로드는 계속 허용됩니다. */
   beginCollaboration(): Promise<CollaborationBeginResultV1>;
   beginLiveCollaboration(): Promise<CollaborationLiveBeginResultV1>;
-  setLivePastePolicy(policy: Readonly<{ epoch: string; writableRegionIds: readonly string[] }>): Promise<void>;
+  executeWritingCommand(command: string): Promise<boolean>;
+  focusWritingSpace(regionId: string, offset: number): Promise<void>;
+  setLivePastePolicy(policy: Readonly<{ epoch: string; writableRegionIds: readonly string[]; promptPolicy?: Readonly<{ memberId: string | null; spaces: readonly Readonly<{ id: string; regionId: string; start: number; end: number; memberId: string | null }>[]; texts: readonly Readonly<{ regionId: string; text: string }>[] }> }>): Promise<void>;
   configureBodyStructure(configuration: BodyStructureConfiguration): Promise<void>;
   applyRemoteBodyStructure(request: BodyStructureRemoteRequest): Promise<BodyStructureRemoteResult>;
   getBodyStructureRequests(): Promise<readonly BodyStructureRequest[]>;
   onBodyStructureRequest(listener: (request: BodyStructureRequest) => void): () => void;
   resolveBodyStructure(resolution: BodyStructureResolution): Promise<BodyStructureResult | null>;
   /** 현재 원본 구조에서 지원되는 일반 본문 문단과 최상위 단일 문단 셀을 반환합니다. */
+  getCollaborationRegionText(regionId: string): Promise<CollaborationRegionV1 | null>;
   getCollaborationRegions(): Promise<readonly CollaborationRegionV1[]>;
   /** 서버가 검증한 예상 텍스트와 일치할 때만 한 영역의 실제 문서 텍스트를 교체합니다. */
   applyCollaborationText(

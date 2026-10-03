@@ -1,3 +1,4 @@
+import { readStructuredCell } from './collaboration-structured-cell.ts';
 import type {
   CollaborationAdapterEffects,
   CollaborationApplyTextRequestV1,
@@ -12,6 +13,7 @@ import {
   booleanValue,
   integerValue,
   isPlainSingleParagraphText,
+  encodeCollaborationParagraph,
   recordValue,
   stringValue,
 } from './collaboration-text-validation.ts';
@@ -49,6 +51,7 @@ type FrozenRegion = {
   readonly id: string;
   readonly label: string;
   readonly address: RegionAddress;
+  readonly structured?: true;
 };
 
 type CurrentTarget = {
@@ -91,6 +94,25 @@ export class CollaborationTextAdapter {
     return this.frozenRegions.flatMap((frozen) => {
       const current = currentTarget(inspection, frozen, this.wasm);
       return current === null ? [] : [current.region];
+    });
+  }
+
+  /** Layout identity survives local text becoming ineligible for plain-text sync.
+   * Never use this catalog to grant write access or apply collaboration edits. */
+  getRegionText(regionId: string): CollaborationRegionV1 | null {
+    if (this.frozenRegions === null) this.getRegionsSync();
+    const frozen = this.frozenRegions?.find(region => region.id === regionId || nativeAddress(region.address) === regionId);
+    return frozen ? readRegion(frozen, this.wasm) : null;
+  }
+
+  getGeometryRegions(): readonly CollaborationRegionV1[] {
+    if (this.frozenRegions === null) this.getRegionsSync();
+    const inspection = this.wasm.inspectApprovedTemplate();
+    if (!isStandardInspection(inspection)
+      || catalogStructureDigest(inspection) !== this.frozenStructureDigest) return [];
+    return (this.frozenRegions ?? []).map((frozen) => {
+      const importAddress = nativeAddress(frozen.address);
+      return { id: importAddress, kind: frozen.address.kind, label: frozen.label, text: '', ...(frozen.structured ? {structured:true as const} : {}) };
     });
   }
 
@@ -253,7 +275,7 @@ function freezeRegions(
   const cells = arrayValue(inspection, 'tableCells').flatMap((candidate) => {
     const blocked = arrayValue(candidate, 'blockedReasons');
     if (booleanValue(candidate, 'safe') !== true
-      && !(blocked.length === 1 && blocked[0] === 'multiple-paragraphs')) return [];
+      && !blocked.every(reason => reason === 'multiple-paragraphs' || reason === 'mixed-control-content')) return [];
     const resolved = recordValue(candidate, 'resolvedAddress');
     const sectionIndex = integerValue(resolved, 'sectionIndex');
     const parentParagraphIndex = integerValue(resolved, 'paragraphIndex');
@@ -282,6 +304,7 @@ function freezeRegions(
     const frozen: FrozenRegion = {
       id: `c:${sectionIndex}:${parentParagraphIndex}:${controlIndex}:${cellIndex}`,
       label: `Cell ${sectionIndex + 1}.${parentParagraphIndex + 1}.${controlIndex + 1}.${cellIndex + 1}`,
+      ...(blocked.includes('mixed-control-content') ? { structured: true as const } : {}),
       address: {
         kind: 'cell',
         sectionIndex,
@@ -351,6 +374,12 @@ function readRegion(
   wasm: CollaborationWasm,
 ): CollaborationRegionV1 | null {
   const address = frozen.address;
+  if (frozen.structured && address.kind === 'cell') {
+    const value = readStructuredCell(wasm, {section:address.sectionIndex,paragraph:address.parentParagraphIndex,control:address.controlIndex,cell:address.cellIndex});
+    const importAddress = nativeAddress(address);
+    return value ? {id:frozen.id,kind:'cell',label:frozen.label,text:value.text,structured:true,
+      ...(frozen.id === importAddress ? {} : {importAddress})} : null;
+  }
   const paragraphs = address.kind === 'body'
     ? [wasm.getTextRange(
       address.sectionIndex,
@@ -375,8 +404,9 @@ function readRegion(
         cellParagraph,
       ),
     ));
-  if (!paragraphs.every(isPlainSingleParagraphText)) return null;
-  const text = paragraphs.join('\n');
+  const encoded = paragraphs.map(encodeCollaborationParagraph);
+  if (encoded.some((paragraph) => paragraph === null)) return null;
+  const text = encoded.join('\n');
   if (text.length > MAX_COLLABORATION_TEXT_CHARS) return null;
   const importAddress = nativeAddress(address);
   return { id: frozen.id, kind: address.kind, label: frozen.label, text,
@@ -390,7 +420,7 @@ function nativeAddress(address: RegionAddress): string {
 
 function isStandardInspection(inspection: Record<string, unknown>): boolean {
   return integerValue(inspection, 'schemaVersion') === 1
-    && stringValue(recordValue(inspection, 'protection'), 'status') === 'standard';
+    && ['standard', 'protected'].includes(stringValue(recordValue(inspection, 'protection'), 'status') ?? '');
 }
 
 function catalogStructureDigest(inspection: Record<string, unknown>): string | null {

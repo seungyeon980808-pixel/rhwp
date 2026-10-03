@@ -82,3 +82,17 @@ test('collaboration v1 fails closed without capability or with malformed input',
   assert.deepEqual(unsupported.requests, []);
   assert.deepEqual(supported.requests, []);
 });
+
+
+test('single-region reads validate addresses, exact identity and null misses', async () => {
+  const region = { id: 'b:0:2', kind: 'body', label: 'Body 1.3', text: 'alpha' };
+  const harness = createHarness({ getCollaborationRegionText: region });
+  assert.deepEqual(await harness.editor.getCollaborationRegionText('b:0:2'), region);
+  assert.deepEqual(harness.requests, [{ method: 'getCollaborationRegionText', params: { regionId: 'b:0:2' } }]);
+  await assert.rejects(harness.editor.getCollaborationRegionText('invalid'), /Invalid region address/);
+  assert.equal(harness.requests.length, 1);
+  const mapped = { ...region, id: '00000000-0000-4000-8000-000000000001', importAddress: region.id };
+  assert.deepEqual(await createHarness({ getCollaborationRegionText: mapped }).editor.getCollaborationRegionText(region.id), mapped);
+  assert.equal(await createHarness({ getCollaborationRegionText: null }).editor.getCollaborationRegionText('b:0:2'), null);
+  await assert.rejects(createHarness({ getCollaborationRegionText: region }).editor.getCollaborationRegionText('b:0:3'), /Invalid collaboration region/);
+});

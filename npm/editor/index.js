@@ -418,6 +418,16 @@ export class RhwpEditor {
     return result;
   }
 
+  async executeWritingCommand(command) {
+    this._requireLiveCollaborationCapability();
+    return this._request('executeWritingCommand', { command });
+  }
+
+  async focusWritingSpace(regionId, offset) {
+    this._requireLiveCollaborationCapability();
+    await this._request('focusWritingSpace', { regionId, offset });
+  }
+
   async setLivePastePolicy(policy) {
     this._requireLiveCollaborationCapability();
     await this._request('setLivePastePolicy', policy);
@@ -505,6 +515,14 @@ export class RhwpEditor {
     if (!isCollaborationRegionRects(result, request.regionId)) {
       throw new TypeError('Invalid collaboration region rectangles from Studio');
     }
+    return result;
+  }
+
+  async getCollaborationRegionText(regionId) {
+    this._requireCollaborationCapability();
+    if (typeof regionId !== 'string' || !/^(b:\d+:\d+|c:\d+:\d+:\d+:\d+)$/.test(regionId)) throw new TypeError('Invalid region address');
+    const result = await this._request('getCollaborationRegionText', { regionId });
+    if (result !== null && (!isCollaborationRegion(result) || (result.importAddress ?? result.id) !== regionId)) throw new Error('Invalid collaboration region from Studio');
     return result;
   }
 
@@ -612,7 +630,8 @@ export class RhwpEditor {
         }
       }
       this._scheduleCollaborationMutationPoll();
-    }, 25);
+    // Batch rapid keystrokes; explicit save still flushes immediately.
+    }, 100);
   }
 
   _requireCollaborationCapability() {
@@ -716,23 +735,29 @@ function isPlainCollaborationText(value) {
   return value.length <= 20_000 && !/[\u0000-\u001f\u007f\ufffc]/u.test(value);
 }
 
+// Wire VT is a soft line break; LF separates cell paragraphs.
+function isCollaborationParagraph(value) {
+  return value.length <= 20_000 && !/[\u0000-\u000a\u000c-\u001f\u007f\ufffc]/u.test(value);
+}
+
 function isCollaborationRegion(value) {
   return value !== null
     && typeof value === 'object'
     && !Array.isArray(value)
-    && Object.keys(value).every((key) => ['id', 'kind', 'label', 'text', 'importAddress'].includes(key))
+    && Object.keys(value).every((key) => ['id', 'kind', 'label', 'text', 'importAddress', 'structured'].includes(key))
     && typeof value.id === 'string'
     && (/^(?:b:\d+:\d+|c:\d+:\d+:\d+:\d+)$/u.test(value.id)
       || /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value.id))
     && (value.importAddress === undefined || (typeof value.importAddress === 'string'
       && /^(?:b:\d+:\d+|c:\d+:\d+:\d+:\d+)$/u.test(value.importAddress)))
+    && (value.structured === undefined || (value.structured === true && value.kind === 'cell'))
     && (value.kind === 'body' || value.kind === 'cell')
     && typeof value.label === 'string'
     && typeof value.text === 'string'
     && value.text.length <= 20_000
     && (value.kind === 'cell'
-      ? value.text.split('\n').every(isPlainCollaborationText)
-      : isPlainCollaborationText(value.text));
+      ? (value.structured ? value.text.replaceAll('\u2029','\n').replaceAll('\ufffc','').split('\n') : value.text.split('\n')).every(isCollaborationParagraph)
+      : isCollaborationParagraph(value.text));
 }
 
 function isCollaborationApplyResult(value) {

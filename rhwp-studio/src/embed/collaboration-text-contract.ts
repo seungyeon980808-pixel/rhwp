@@ -4,6 +4,7 @@ export interface CollaborationRegionV1 {
   readonly label: string;
   readonly text: string;
   readonly importAddress?: string;
+  readonly structured?: true;
 }
 
 export interface CollaborationApplyTextRequestV1 {
@@ -29,7 +30,9 @@ export type CollaborationApplyTextResultV1 =
         | 'unsupported-region';
     };
 
-export interface CollaborationWasm {
+import type { StructuredCellReader } from './collaboration-structured-cell.ts';
+
+export interface CollaborationWasm extends StructuredCellReader {
   getControlTextPositions?(section: number, paragraph: number): number[];
   getParagraphCount?(section: number): number;
   inspectApprovedTemplate(): Record<string, unknown>;

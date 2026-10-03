@@ -1,3 +1,6 @@
+import { structuredPositionRemapper } from './collaboration-structured-cell.ts';
+import { readStructuredCell, applyStructuredCellOps, structuredManifest, type StructuredCellWasm } from './collaboration-structured-cell.ts';
+import { encodeCollaborationParagraph, decodeCollaborationParagraph, isCollaborationParagraph } from './collaboration-text-validation.ts';
 import type { CellInfo, CharProperties, ParaProperties, TableDimensions } from '../core/types.ts';
 import { formatOperations, parseFormatOperation } from './collaboration-format.ts';
 import { applyFormatting, planFormatting, type CollaborationFormatWasm } from './collaboration-format-apply.ts';
@@ -21,7 +24,8 @@ type CellAddress = Readonly<{
 }>;
 type Address = BodyAddress | CellAddress;
 
-export interface CollaborationLiveWasm extends RawResourceSource, CollaborationFormatWasm {
+export interface CollaborationLiveWasm extends RawResourceSource, CollaborationFormatWasm, StructuredCellWasm {
+  getCollaborationBodyParagraph?(section: number, paragraph: number): Readonly<{ text: string; paragraph: ParaProperties; charRunStarts?: readonly number[] }> | null;
   getParagraphLength(section: number, paragraph: number): number;
   getTextRange(section: number, paragraph: number, offset: number, count: number): string;
   insertText(section: number, paragraph: number, offset: number, text: string): string;
@@ -56,6 +60,22 @@ export class CollaborationLiveAdapter {
   private readonly knownFormats = new Map<string, CollaborationManifestRegionV1>();
   private applying = false;
   private started = false;
+  private capturedRevision = -1;
+  private pendingCapture: Promise<void> | null = null;
+  private readonly regionCatalog = new Map<string, CollaborationRegionV1>();
+  private readonly tableSignatures = new Map<string, string>();
+  private dirtyRegions: Set<string> | null = null;
+  private observedRevision = -1;
+
+  /** Only pass IDs when the native operation is a text-only edit within those regions.
+   * Unknown operations (formatting, undo, topology changes) deliberately invalidate all. */
+  noteMutation(revision: number, regionIds?: readonly string[]): void {
+    const previous = Math.max(this.observedRevision, this.capturedRevision);
+    if (this.observedRevision <= this.capturedRevision) this.dirtyRegions = new Set();
+    this.observedRevision = revision;
+    if (!regionIds?.length || revision !== previous + 1) this.dirtyRegions = null;
+    else if (this.dirtyRegions) for (const id of regionIds) this.dirtyRegions.add(id);
+  }
 
   constructor(wasm: CollaborationLiveWasm, effects: Effects) {
     this.wasm = wasm;
@@ -63,10 +83,16 @@ export class CollaborationLiveAdapter {
   }
 
   async begin(): Promise<void> {
-    this.knownTexts = new Map((await this.effects.regions()).map((region) => [region.id, region.text]));
+    const regions = await this.effects.regions();
+    this.regionCatalog.clear();
+    for (const region of regions) this.regionCatalog.set(region.id, region);
+    this.knownTexts = new Map(regions.map((region) => [region.id, region.text]));
     this.knownFormats.clear();
     for (const region of (await this.manifest()).regions) this.knownFormats.set(region.id, region);
     this.started = true;
+    this.capturedRevision = this.effects.revision();
+    this.observedRevision = this.capturedRevision;
+    this.dirtyRegions = new Set();
   }
 
   async apply(request: CollaborationApplyOpsRequestV1): Promise<CollaborationApplyOpsResultV1> {
@@ -75,6 +101,23 @@ export class CollaborationLiveAdapter {
     if (!region || !address) return { schemaVersion: 1, ok: false, reason: 'region-not-found' };
     if (region.text !== request.expectedText) {
       return { schemaVersion: 1, ok: false, reason: 'expected-text-mismatch' };
+    }
+    if (region.structured && address.kind === 'cell') {
+      this.applying = true;
+      try {
+        const beforeStructure = readStructuredCell(this.wasm, address);
+        const text = applyStructuredCellOps(this.wasm, address, request.expectedText, request.ops);
+        if (text === null) return { schemaVersion: 1, ok: false, reason: 'unsupported-text' };
+        const afterStructure = readStructuredCell(this.wasm, address);
+        await this.effects.refresh({ nativeAddress: region.importAddress ?? region.id, before: region.text, ops: request.ops,
+          ...(beforeStructure && afterStructure ? {remapPosition:structuredPositionRemapper(address,beforeStructure,afterStructure,request.ops)} : {}) });
+        const updated = { ...region, text };
+        this.regionCatalog.set(region.id, updated);
+        this.knownTexts.set(region.id, text);
+        this.knownFormats.set(region.id, this.manifestRegion(updated).region);
+        this.publish(request.origin, region.id, text);
+        return { schemaVersion: 1, ok: true, text, revision: this.effects.revision() };
+      } finally { this.applying = false; }
     }
     let text = region.text;
     const engineOps: Array<
@@ -103,7 +146,7 @@ export class CollaborationLiveAdapter {
       const engineOffset = scalarOffset(paragraphText, op.offset - paragraphStart);
       if (engineOffset === null) return { schemaVersion: 1, ok: false, reason: 'invalid-offset' };
       if (op.type === 'insert') {
-        if (op.text.length > 20_000 || !(target.kind === 'cell' ? op.text.split('\n').every(isPlainText) : isPlainText(op.text))) {
+        if (op.text.length > 20_000 || !(target.kind === 'cell' ? op.text.split('\n').every(isCollaborationParagraph) : isCollaborationParagraph(op.text))) {
           return { schemaVersion: 1, ok: false, reason: 'unsupported-text' };
         }
         if (target.kind === 'cell') {
@@ -156,13 +199,47 @@ export class CollaborationLiveAdapter {
     } finally { this.applying = false; }
   }
 
-  async captureLocal(): Promise<void> {
+  /** Polling must not rescan every character of an unchanged document. */
+  async capturePending(): Promise<void> {
     if (!this.started || this.applying) return;
-    for (const region of await this.effects.regions()) {
+    if (this.pendingCapture) return this.pendingCapture;
+    const revision = this.effects.revision();
+    if (revision === this.capturedRevision) return;
+    const ids = this.observedRevision === revision && this.dirtyRegions
+      ? [...this.dirtyRegions] : undefined;
+    this.dirtyRegions = new Set();
+    this.pendingCapture = this.captureLocal(ids).then(() => { this.capturedRevision = revision; });
+    try { await this.pendingCapture; }
+    catch (error) {
+      // A failed snapshot must remain dirty; an empty retry would lose the edit.
+      this.dirtyRegions = null;
+      throw error;
+    } finally { this.pendingCapture = null; }
+  }
+
+  async captureLocal(dirtyIds?: readonly string[]): Promise<void> {
+    if (!this.started || this.applying) return;
+    const targeted = dirtyIds !== undefined && dirtyIds.every(id => this.regionCatalog.has(id));
+    const regions = targeted ? dirtyIds.map(id => {
+      const region = this.regionCatalog.get(id)!;
+      const address = parseAddress(region.importAddress ?? region.id);
+      if (!address) throw new TypeError(`Invalid collaboration region: ${id}`);
+      const text = region.structured && address.kind === 'cell'
+        ? readStructuredCell(this.wasm, address)?.text : read(this.wasm, address);
+      if (text === undefined) throw new TypeError(`Unsupported collaboration region: ${id}`);
+      return { ...region, text };
+    }) : await this.effects.regions();
+    if (!targeted) {
+      this.tableSignatures.clear();
+      this.regionCatalog.clear();
+    }
+    for (const region of regions) {
+      this.regionCatalog.set(region.id, region);
       if (this.applying) return;
-      const manifest = this.manifestRegion(region).region;
       const before = this.knownFormats.get(region.id);
-      const ops = before ? formatOperations(before, manifest) : [];
+      const manifest = this.manifestRegion(region).region;
+      const detected = before ? formatOperations(before, manifest) : [];
+      const ops = region.structured ? structuredTextFormats(manifest.text, detected) : detected;
       this.knownFormats.set(region.id, manifest);
       if (this.knownTexts.get(region.id) !== region.text || ops.length > 0) {
         this.knownTexts.set(region.id, region.text);
@@ -176,6 +253,7 @@ export class CollaborationLiveAdapter {
   }
 
   async manifest(): Promise<CollaborationManifestV1> {
+    this.tableSignatures.clear();
     const entries = (await this.effects.regions()).map((region) => this.manifestRegion(region));
     const { resources, missing } = inspectRawResources(this.wasm);
     return { schemaVersion: 1, regions: entries.map((entry) => entry.region), resources, missing };
@@ -185,18 +263,22 @@ export class CollaborationLiveAdapter {
     region: CollaborationManifestRegionV1;
     missing: readonly string[];
   }> {
+    if (region.structured) return { region: structuredManifest(this.wasm, region, groupRuns), missing: [] };
     const address = parseAddress(region.importAddress ?? region.id);
     if (!address) throw new TypeError(`Invalid collaboration region: ${region.id}`);
     if (address.kind === 'body') {
-      const paragraph = this.wasm.getParaPropertiesAt(address.section, address.paragraph);
-      const runs = groupRuns(region.text, (offset) => this.wasm.getCharPropertiesAt(address.section, address.paragraph, offset));
+      const batch = this.wasm.getCollaborationBodyParagraph?.(address.section, address.paragraph);
+      const paragraph = batch?.paragraph ?? this.wasm.getParaPropertiesAt(address.section, address.paragraph);
+      const runs = groupRuns(region.text, (offset) => this.wasm.getCharPropertiesAt(address.section, address.paragraph, offset), batch?.charRunStarts);
       return { region: { id: region.id, kind: region.kind, text: region.text, paragraph, runs }, missing: [] };
     }
+    const batch = this.wasm.getCollaborationStructuredCell?.(address.section, address.paragraph, address.control, address.cell);
+    const nativeParagraphs = batch?.supported ? batch.blocks[0]?.paragraphs : undefined;
     const paragraphs = region.text.split('\n').map((text, index) => ({
       id: `${region.id}:p:${index}`, text,
-      paragraph: this.wasm.getCellParaPropertiesAt(address.section, address.paragraph, address.control, address.cell, index),
+      paragraph: nativeParagraphs?.[index]?.paragraph ?? this.wasm.getCellParaPropertiesAt(address.section, address.paragraph, address.control, address.cell, index),
       runs: groupRuns(text, (offset) => this.wasm.getCellCharPropertiesAt(
-        address.section, address.paragraph, address.control, address.cell, index, offset)),
+        address.section, address.paragraph, address.control, address.cell, index, offset), nativeParagraphs?.[index]?.charRunStarts),
     }));
     const first = paragraphs[0];
     if (!first) throw new TypeError(`Missing cell paragraph: ${region.id}`);
@@ -206,7 +288,12 @@ export class CollaborationLiveAdapter {
       start += entry.text.length + 1;
       return mapped;
     });
-    const signature = tableTopologySignature(this.wasm, address);
+    const tableKey = `${address.section}:${address.paragraph}:${address.control}`;
+    let signature = this.tableSignatures.get(tableKey);
+    if (signature === undefined) {
+      signature = tableTopologySignature(this.wasm, address);
+      this.tableSignatures.set(tableKey, signature);
+    }
     return {
       region: {
         id: region.id, kind: region.kind, text: region.text, paragraph: first.paragraph, runs, paragraphs,
@@ -238,16 +325,22 @@ function parseAddress(regionId: string): Address | null {
 }
 
 function read(wasm: CollaborationLiveWasm, address: Address): string {
-  return address.kind === 'body'
-    ? wasm.getTextRange(address.section, address.paragraph, 0, wasm.getParagraphLength(address.section, address.paragraph))
+  const paragraphs = address.kind === 'body'
+    ? [wasm.getTextRange(address.section, address.paragraph, 0, wasm.getParagraphLength(address.section, address.paragraph))]
     : Array.from({ length: wasm.getCellParagraphCount(address.section, address.paragraph, address.control, address.cell) },
       (_, index) => wasm.getTextInCell(address.section, address.paragraph, address.control, address.cell, index, 0,
-        wasm.getCellParagraphLength(address.section, address.paragraph, address.control, address.cell, index))).join('\n');
+        wasm.getCellParagraphLength(address.section, address.paragraph, address.control, address.cell, index)));
+  return paragraphs.map((paragraph) => {
+    const encoded = encodeCollaborationParagraph(paragraph);
+    if (encoded === null) throw new TypeError('Unsupported native collaboration paragraph');
+    return encoded;
+  }).join('\n');
 }
 
 function insert(wasm: CollaborationLiveWasm, address: Address, offset: number, text: string): void {
-  if (address.kind === 'body') wasm.insertText(address.section, address.paragraph, offset, text);
-  else wasm.insertTextInCell(address.section, address.paragraph, address.control, address.cell, address.cellParagraph, offset, text);
+  const nativeText = decodeCollaborationParagraph(text);
+  if (address.kind === 'body') wasm.insertText(address.section, address.paragraph, offset, nativeText);
+  else wasm.insertTextInCell(address.section, address.paragraph, address.control, address.cell, address.cellParagraph, offset, nativeText);
 }
 
 function remove(wasm: CollaborationLiveWasm, address: Address, offset: number, count: number): void {
@@ -255,29 +348,38 @@ function remove(wasm: CollaborationLiveWasm, address: Address, offset: number, c
   else wasm.deleteTextInCell(address.section, address.paragraph, address.control, address.cell, address.cellParagraph, offset, count);
 }
 
-export function groupRuns(text: string, properties: (offset: number) => CharProperties): readonly CollaborationRunV1[] {
+export function groupRuns(
+  text: string,
+  properties: (offset: number) => CharProperties,
+  runStarts?: readonly number[],
+): readonly CollaborationRunV1[] {
   if (text.length === 0) return [];
+  // Native boundaries include both style and script changes (language-dependent font).
+  // Missing/invalid boundaries fall back to exhaustive reads, never guessed sampling.
+  const utf16Offsets = [0];
+  for (const character of text) utf16Offsets.push(utf16Offsets.at(-1)! + character.length);
+  const scalarLength = utf16Offsets.length - 1;
+  const starts = runStarts?.[0] === 0 && runStarts.every((value, index) =>
+    Number.isSafeInteger(value) && value >= 0 && value < scalarLength
+    && (index === 0 || value > runStarts[index - 1]!))
+    ? runStarts : Array.from({ length: scalarLength }, (_, index) => index);
   const runs: CollaborationRunV1[] = [];
   let start = 0;
   let current = properties(0);
-  let offset = 0;
-  let scalar = 0;
-  for (const character of text) {
-    const next = properties(scalar);
-    if (JSON.stringify(next) !== JSON.stringify(current)) {
+  let serialized = JSON.stringify(current);
+  for (const scalar of starts) {
+    if (scalar === 0) continue;
+    const next = properties(scalar), nextSerialized = JSON.stringify(next);
+    if (nextSerialized !== serialized) {
+      const offset = utf16Offsets[scalar]!;
       runs.push({ start, end: offset, properties: current });
       start = offset;
       current = next;
+      serialized = nextSerialized;
     }
-    offset += character.length;
-    scalar += 1;
   }
   runs.push({ start, end: text.length, properties: current });
   return runs;
-}
-
-function isPlainText(value: string): boolean {
-  return value.length <= 20_000 && !/[\u0000-\u001f\u007f\ufffc]/u.test(value);
 }
 
 function scalarOffset(text: string, utf16Offset: number): number | null {
@@ -287,4 +389,21 @@ function scalarOffset(text: string, utf16Offset: number): number | null {
     if (previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) return null;
   }
   return [...text.slice(0, utf16Offset)].length;
+}
+
+/** Native object anchors and nested-cell separators never receive shared text formatting. */
+export function structuredTextFormats(text: string, operations: readonly CollaborationFormatOpV1[]): readonly CollaborationFormatOpV1[] {
+  return operations.flatMap(operation => {
+    if (operation.scope !== 'character') return [];
+    const parts: CollaborationFormatOpV1[] = [];
+    const end = operation.offset + operation.count;
+    let start = operation.offset;
+    for (let offset = start; offset < end; offset++) {
+      if (text[offset] !== '\u2029' && text[offset] !== '\ufffc') continue;
+      if (offset > start) parts.push({ ...operation, offset: start, count: offset - start });
+      start = offset + 1;
+    }
+    if (start < end) parts.push({ ...operation, offset: start, count: end - start });
+    return parts;
+  });
 }

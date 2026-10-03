@@ -1,5 +1,6 @@
 import init, { HwpDocument, version } from '@wasm/rhwp.js';
 import { UnsupportedLiveStructureError } from '../embed/collaboration-structure-boundary';
+import { PromptSpacePolicy } from '../embed/prompt-space-policy';
 import type { LivePastePolicy } from '../embed/collaboration-range-paste';
 import { BodyStructureNativeError } from '../embed/collaboration-body-structure';
 import * as wasmExports from '@wasm/rhwp.js';
@@ -263,6 +264,16 @@ function installCanvasFontSubstitution(): void {
 export class WasmBridge {
   private liveTableStructureRestricted = false;
   private livePastePolicy: LivePastePolicy | null = null;
+  private promptSpacePolicy: PromptSpacePolicy | null = null;
+  private structuredCollaborationCells = new Set<string>();
+  isStructuredCollaborationCell(section:number,parent:number,control:number,cell:number):boolean {
+    return this.structuredCollaborationCells.has(`${section}:${parent}:${control}:${cell}`);
+  }
+  hasPromptSpaces(): boolean { return this.promptSpacePolicy?.active === true; }
+  hasRestrictedPromptSpaces(): boolean { return this.promptSpacePolicy?.restricted === true; }
+  canEditPromptSelection(start: DocumentPosition, end: DocumentPosition, deleteDirection = 0): boolean {
+    return (this.promptSpacePolicy ?? new PromptSpacePolicy({memberId:null,spaces:[],texts:[]})).allows(this,start,end,deleteDirection);
+  }
 
   setLivePastePolicy(policy: LivePastePolicy): void {
     if (this.livePastePolicy && this.livePastePolicy.epoch !== policy.epoch) {
@@ -270,6 +281,7 @@ export class WasmBridge {
       throw new Error('Live paste epoch mismatch');
     }
     this.livePastePolicy = { epoch: policy.epoch, writableRegionIds: [...policy.writableRegionIds] };
+    if (policy.promptPolicy) this.promptSpacePolicy = new PromptSpacePolicy(policy.promptPolicy);
   }
 
   canPasteLiveRegion(regionId: string, epoch?: string): boolean {
@@ -416,6 +428,8 @@ export class WasmBridge {
       const previousDoc = this.doc;
       this.doc = nextDoc;
       this.livePastePolicy = null;
+      this.promptSpacePolicy = null;
+      this.structuredCollaborationCells.clear();
       this._fileName = nextFileName;
       this._currentFileHandle = null;
       this._requiresPasswordForSave = false;
@@ -3041,6 +3055,18 @@ export class WasmBridge {
   setFieldValueByName(name: string, value: string): { ok: boolean; fieldId: number; oldValue: string; newValue: string } {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse((this.doc as any).setFieldValueByName(name, value));
+  }
+
+  getCollaborationBodyParagraph(section:number,paragraph:number): any {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).getCollaborationBodyParagraph(section,paragraph));
+  }
+
+  getCollaborationStructuredCell(section: number, parent: number, control: number, cell: number): any {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    const value=JSON.parse((this.doc as any).getCollaborationStructuredCell(section, parent, control, cell));
+    if(value.supported && value.nested) this.structuredCollaborationCells.add(`${section}:${parent}:${control}:${cell}`);
+    return value;
   }
 
   inspectApprovedTemplate(): Record<string, unknown> {

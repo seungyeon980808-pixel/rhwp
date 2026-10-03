@@ -84,8 +84,8 @@ test('120 alternating rich marks replay atomically through public editor and rea
         }
       } finally { reopened.wasm.releaseDocument(); }
     }
-    assert.equal((await b.catalog.getRegions()).length, 136);
-    console.log(JSON.stringify({ scenario: 'rich-120-public-rpc', operations: ops.length, requests: calls.length, text: mutation.text, allMarksPreserved: true, catalog: 136 }));
+    assert.equal((await b.catalog.getRegions()).length, 138);
+    console.log(JSON.stringify({ scenario: 'rich-120-public-rpc', operations: ops.length, requests: calls.length, text: mutation.text, allMarksPreserved: true, catalog: 138 }));
   } finally { a.wasm.releaseDocument(); b.wasm.releaseDocument(); }
 });
 

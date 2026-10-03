@@ -57,14 +57,14 @@ for (const [name, operation] of operations) test(`live ${name} rejects before na
   const h = harness();
   try {
     const before = await h.catalog.getRegions();
-    assert.equal(before.length, 136);
+    assert.equal(before.length, 138);
     await h.live.begin();
     h.wasm.insertTextInCell(0, 2, 0, 0, 0, 0, 'PENDING<script>');
     h.wasm.restrictLiveTableStructure();
     const inspection = h.wasm.inspectApprovedTemplate();
     assert.throws(() => operation(h.wasm), UnsupportedLiveStructureError);
     assert.deepEqual(h.wasm.inspectApprovedTemplate(), inspection);
-    assert.equal((await h.catalog.getRegions()).length, 136);
+    assert.equal((await h.catalog.getRegions()).length, 138);
     await h.live.captureLocal();
     assert.equal(h.live.drain(0).filter((m) => m.origin === 'local').length, 1);
     assert.equal((await h.catalog.getRegions()).find((r) => r.id === 'c:0:2:0:0')?.text,

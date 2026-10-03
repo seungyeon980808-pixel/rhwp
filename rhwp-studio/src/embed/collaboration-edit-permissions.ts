@@ -2,7 +2,10 @@ import type { DocumentPosition } from '../core/types.ts';
 
 /** Complete supported regions touched by a text selection; unsupported contexts fail closed. */
 export function collaborationEditRegions(start: DocumentPosition, end: DocumentPosition): readonly string[] | null {
-  if (start.isTextBox || end.isTextBox || (start.cellPath?.length ?? 0) > 1 || (end.cellPath?.length ?? 0) > 1
+  const outer = (pos: DocumentPosition): DocumentPosition => pos.cellPath?.[0]
+    ? {...pos, controlIndex:pos.cellPath[0].controlIndex, cellIndex:pos.cellPath[0].cellIndex} : pos;
+  start=outer(start); end=outer(end);
+  if (start.isTextBox || end.isTextBox
     || start.sectionIndex !== end.sectionIndex) return null;
   if (start.parentParaIndex !== undefined || end.parentParaIndex !== undefined) {
     if (start.parentParaIndex === undefined || end.parentParaIndex !== start.parentParaIndex

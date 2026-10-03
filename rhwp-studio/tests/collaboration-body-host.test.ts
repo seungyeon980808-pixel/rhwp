@@ -110,7 +110,7 @@ test('Enter stages a server operation without mutation, and only its durable rec
       regionIds: [request.operation.start.regionId, randomUUID()], removedRegionIds: [] };
     const result = host.resolve({ planId: request.planId, receipt });
     assert.ok(result);
-    assert.equal(result.regions.length, 137);
+    assert.equal(result.regions.length, 139);
     assert.deepEqual(result.cursor, { sectionIndex: 0, paragraphIndex: 15, charOffset: 0 });
     assert.deepEqual(host.resolve({ planId: request.planId, receipt }), { ...result, applied: false });
   } finally { wasm.releaseDocument(); }

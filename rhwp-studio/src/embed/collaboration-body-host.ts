@@ -83,7 +83,11 @@ export class CollaborationBodyHost {
       throw new BodyStructureNativeError('STALE_STATE');
     if (!this.lastAuthority && config.topologyRevision !== 0) throw new BodyStructureNativeError('STALE_STATE');
     const native = this.catalog.getRegionsSync();
-    if (native.length !== config.regions.length || config.regions.some((region) =>
+    // An older server catalog may omit regions newly supported by this engine.
+    // Initial hydration maps only its validated subset; remapStructure excludes
+    // every extra native region from both the catalog and write permissions.
+    // Once authority is installed, catalog membership must remain exact.
+    if ((this.lastAuthority && native.length !== config.regions.length) || config.regions.some((region) =>
       native.find((entry) => (entry.importAddress ?? entry.id) === region.importAddress)?.text !== region.text
       || (this.lastAuthority && native.find(entry => entry.id === region.id)?.importAddress !== region.importAddress)))
       throw new BodyStructureNativeError('STALE_STATE');

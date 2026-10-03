@@ -4730,6 +4730,33 @@ impl HwpDocument {
         self.inspect_approved_template_json()
     }
 
+    #[wasm_bindgen(js_name = getCollaborationBodyParagraph)]
+    pub fn get_collaboration_body_paragraph(
+        &self,
+        section: u32,
+        paragraph: u32,
+    ) -> Result<String, JsValue> {
+        self.collaboration_body_paragraph_json(section as usize, paragraph as usize)
+            .map_err(|error| error.into())
+    }
+
+    #[wasm_bindgen(js_name = getCollaborationStructuredCell)]
+    pub fn get_collaboration_structured_cell(
+        &self,
+        section: u32,
+        parent: u32,
+        control: u32,
+        cell: u32,
+    ) -> Result<String, JsValue> {
+        self.collaboration_structured_cell_json(
+            section as usize,
+            parent as usize,
+            control as usize,
+            cell as usize,
+        )
+        .map_err(|error| error.into())
+    }
+
     /// 승인 템플릿 요청 전체를 문서 변경 없이 사전 검증한다.
     #[wasm_bindgen(js_name = preflightApprovedTemplateEdits)]
     pub fn preflight_approved_template_edits(

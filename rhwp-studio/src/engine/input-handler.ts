@@ -2246,7 +2246,8 @@ export class InputHandler {
   /** 셀 블록 안 모든 셀의 모든 문단을 문단 서식 대상으로 만든다 */
   private getParaFormatTargetsForCellBlock(block: SelectedCellBlock): ParaFormatTarget[] {
     // 중첩 표 문단 서식은 목표 밖(getParaFormatTargetsForRange 도 동일 하계)이다.
-    if (block.cellPath) return [];
+    if (block.cellPath || (this.wasm.isLiveStructureRestricted?.() && block.cellIndices.some(index =>
+      this.wasm.isStructuredCollaborationCell?.(block.sec,block.ppi,block.ci,index)))) return [];
     return paraFormatTargetsForCellBlock(
       block,
       (cellIdx) => this.wasm.getCellParagraphCount(block.sec, block.ppi, block.ci, cellIdx),
@@ -2255,6 +2256,13 @@ export class InputHandler {
 
   private getParaFormatTargetsForRange(start: DocumentPosition, end: DocumentPosition): ParaFormatTarget[] {
     if (this.cursor.isInHeaderFooter() || this.cursor.isInFootnote()) return [];
+    // Structured collaboration preserves native paragraph styles; only text and
+    // supported character marks are synchronized inside the containing cell.
+    if (this.wasm.isLiveStructureRestricted?.() && [start,end].some(pos => {
+      const outer=pos.cellPath?.[0];
+      return pos.parentParaIndex !== undefined && this.wasm.isStructuredCollaborationCell?.(
+        pos.sectionIndex,pos.parentParaIndex,outer?.controlIndex??pos.controlIndex!,outer?.cellIndex??pos.cellIndex!);
+    })) return [];
     if (start.isTextBox || end.isTextBox) return [];
     if ((start.cellPath?.length ?? 0) > 1 || (end.cellPath?.length ?? 0) > 1) return [];
 
@@ -2770,7 +2778,7 @@ export class InputHandler {
   }
 
   /** 편집 후 처리: 재렌더링 + 캐럿 갱신 */
-  private afterEdit(flushDeferredPagination = true): void {
+  private afterEdit(flushDeferredPagination = true, dirtyRegions?: readonly string[]): void {
     this.pendingFocusedPagePatch = null;
     if (flushDeferredPagination) {
       this.flushDeferredPaginationIfNeeded('before-full-edit', false);
@@ -2787,20 +2795,20 @@ export class InputHandler {
     // resolveTableResizeHit → startResizeDrag 가 옛 번호의 cellIdx 로 엉뚱한 행을 리사이즈한다.
     // undo/redo 경로가 이미 같은 이유로 이 루틴을 부른다.
     this.clearTableResizeRuntimeCache();
-    this.eventBus.emit('document-mutated', 'input-handler-edit');
-    this.eventBus.emit('document-changed');
+    this.eventBus.emit('document-mutated', 'input-handler-edit', dirtyRegions);
+    this.eventBus.emit('document-changed', 'input-handler-edit', dirtyRegions);
     this.updateCaret();
   }
 
   /** 셀 내부 단일 텍스트 편집 후 처리: 현재 페이지 canvas만 갱신한다. */
-  private afterPageLocalEdit(): void {
+  private afterPageLocalEdit(dirtyRegions?: readonly string[]): void {
     const focusedPagePatch = this.pendingFocusedPagePatch;
     this.pendingFocusedPagePatch = null;
     if (this.flushDeferredPaginationForCellOverflow()) return;
 
     // 텍스트 입력은 셀 폭을 바꾸지 않으므로 눈금자 셀 bbox 캐시를 무효화하지 않는다.
     this.protectedCellHitCache = null;
-    this.eventBus.emit('document-mutated', 'input-handler-edit');
+    this.eventBus.emit('document-mutated', 'input-handler-edit', dirtyRegions);
     const pageIndex = this.cursor.getRect()?.pageIndex;
     if (typeof pageIndex === 'number' && Number.isInteger(pageIndex) && pageIndex >= 0) {
       this.eventBus.emit('document-page-invalidated', {
@@ -2976,14 +2984,17 @@ export class InputHandler {
     pageLocalOptions: PageLocalTextEditOptions = {},
     boundaryHandled = false,
   ): void {
+    const dirtyRegions = !this.cursor.isInHeaderFooter() && !this.cursor.isInFootnote()
+      && isPageLocalTextEditCommand('insertText', beforePos, afterPos, pageLocalOptions)
+      ? collaborationEditRegions(beforePos, afterPos) ?? undefined : undefined;
     if (boundaryHandled) {
-      this.afterEdit(false);
+      this.afterEdit(false, dirtyRegions);
       return;
     }
     if (this.shouldUsePageLocalRefresh('insertText', beforePos, afterPos, pageLocalOptions)) {
-      this.afterPageLocalEdit();
+      this.afterPageLocalEdit(dirtyRegions);
     } else {
-      this.afterEdit();
+      this.afterEdit(true, dirtyRegions);
     }
   }
 
@@ -2996,8 +3007,11 @@ export class InputHandler {
     pageLocalOptions: PageLocalTextEditOptions = {},
     boundaryHandled = false,
   ): void {
+    const dirtyRegions = !this.cursor.isInHeaderFooter() && !this.cursor.isInFootnote()
+      && isPageLocalTextEditCommand(commandType, beforePos, afterPos, pageLocalOptions)
+      ? collaborationEditRegions(beforePos, afterPos) ?? undefined : undefined;
     if (boundaryHandled) {
-      this.afterEdit(false);
+      this.afterEdit(false, dirtyRegions);
       return;
     }
     const policy = requested ?? fallback;
@@ -3008,17 +3022,17 @@ export class InputHandler {
         this.updateCaret();
         return;
       case 'pageLocal':
-        this.afterPageLocalEdit();
+        this.afterPageLocalEdit(dirtyRegions);
         return;
       case 'full':
-        this.afterEdit();
+        this.afterEdit(true, dirtyRegions);
         return;
       case 'auto':
       default:
         if (this.shouldUsePageLocalRefresh(commandType, beforePos, afterPos, pageLocalOptions)) {
-          this.afterPageLocalEdit();
+          this.afterPageLocalEdit(dirtyRegions);
         } else {
-          this.afterEdit();
+          this.afterEdit(true, dirtyRegions);
         }
     }
   }
@@ -3777,10 +3791,12 @@ export class InputHandler {
       || this.cursor.isInTableObjectSelection() || this.isInPictureObjectSelection()) return false;
     try {
       const block = this.getSelectedCellBlock();
+      if (block && this.wasm.hasRestrictedPromptSpaces?.()) return false;
       if (block) return !block.cellPath && block.cellIndices.length > 0 && block.cellIndices.every(index =>
         this.wasm.canPasteLiveRegion(`c:${block.sec}:${block.ppi}:${block.ci}:${index}`, epoch));
       const selected = this.cursor.getSelectionOrdered();
       const current = position ?? this.cursor.getPosition();
+      if (this.wasm.canEditPromptSelection?.(selected?.start ?? current, selected?.end ?? current) === false) return false;
       const regions = collaborationEditRegions(selected?.start ?? current, selected?.end ?? current);
       return regions !== null && regions.length > 0 && regions.every(id => this.wasm.canPasteLiveRegion(id, epoch));
     } catch { return false; }
@@ -3793,7 +3809,7 @@ export class InputHandler {
   }
 
   canDeleteTextInFormMode(pos: DocumentPosition, count: number): boolean {
-    if (!this.canEditLiveSelection(pos)) return false;
+    if (!this.canEditLiveSelection(pos) || this.wasm.canEditPromptSelection?.(pos, { ...pos, charOffset: pos.charOffset + count }) === false) return false;
     if (this.editMode !== 'form') return true;
     const fi = this.getFormFieldInfoAt(pos);
     if (!fi?.editableInForm) return false;
@@ -4064,6 +4080,18 @@ export class InputHandler {
   }
 
   isEditorInput(target: EventTarget | null): boolean { return target === this.textarea; }
+
+  focusCollaborationPosition(position: DocumentPosition): void {
+    if (this.isComposing) return;
+    this.cursor.clearSelection(); this.cursor.moveTo(position); this.cursor.resetPreferredX();
+    this.active = true;
+    // Focusing the offscreen IME textarea must not undo the caret scroll.
+    this.textarea.focus({ preventScroll: true });
+    this.updateSelection(); this.updateCaret();
+    const rect = this.cursor.getRect();
+    if (rect) this.container.scrollTop = Math.max(0, this.virtualScroll.getPageOffset(rect.pageIndex)
+      + rect.y * this.viewportManager.getZoom() - this.container.clientHeight / 3);
+  }
 
   restoreBodyStructureSelection(position: DocumentPosition, selection: Readonly<{ start: DocumentPosition; end: DocumentPosition }> | null): void {
     if (this.isComposing) return;

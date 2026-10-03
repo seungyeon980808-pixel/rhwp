@@ -13,10 +13,15 @@ test('live editing checks every paragraph of a forward or reversed selection', (
 test('all text paragraphs within one cell use the complete cell permission', () => {
   assert.deepEqual(collaborationEditRegions(cell, { ...cell, cellParaIndex: 2, charOffset: 6 }), ['c:0:3:0:4']);
 });
-test('unsupported mixed, nested and incomplete selections fail closed', () => {
+test('unsupported mixed and incomplete selections fail closed', () => {
   for (const [start, end] of [
     [body, { ...body, sectionIndex: 1 }], [body, cell], [cell, { ...cell, cellIndex: 5 }],
     [{ ...cell, controlIndex: undefined }, cell], [{ ...body, isTextBox: true }, body],
-    [{ ...cell, cellPath: [{ controlIndex: 0, cellIndex: 4, cellParaIndex: 0 }, { controlIndex: 0, cellIndex: 0, cellParaIndex: 0 }] }, cell],
   ] as [DocumentPosition, DocumentPosition][]) assert.equal(collaborationEditRegions(start, end), null);
+});
+
+test('nested cell text inherits its outer cell permission', () => {
+  const nested = {...cell, controlIndex:7, cellIndex:8, cellPath:[
+    {controlIndex:0,cellIndex:4,cellParaIndex:0}, {controlIndex:7,cellIndex:8,cellParaIndex:0}]};
+  assert.deepEqual(collaborationEditRegions(nested,nested),['c:0:3:0:4']);
 });

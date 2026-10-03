@@ -1111,7 +1111,66 @@ pub(crate) fn area_dot_fallback_width(font_family: &str, font_size: f64) -> Opti
     })
 }
 
+// Font metric tables are immutable. Keep exact glyph results across repeated
+// pagination/caret layout passes, bounded independently of document size.
+const GLYPH_CACHE_FONTS: usize = 32;
+const GLYPH_CACHE_CHARS: usize = 2048;
+struct FontGlyphWidths {
+    family: String,
+    bold: bool,
+    italic: bool,
+    size_bits: u64,
+    widths: std::collections::HashMap<char, Option<f64>>,
+}
+thread_local! {
+    static GLYPH_WIDTH_CACHE: std::cell::RefCell<Vec<FontGlyphWidths>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 fn measure_char_width_embedded(
+    font_family: &str,
+    bold: bool,
+    italic: bool,
+    c: char,
+    font_size: f64,
+) -> Option<f64> {
+    // Avoid retaining an unbounded user-provided family string.
+    if font_family.len() > 512 {
+        return measure_char_width_embedded_uncached(font_family, bold, italic, c, font_size);
+    }
+    GLYPH_WIDTH_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let index = cache.iter().rposition(|entry| {
+            entry.family == font_family
+                && entry.bold == bold
+                && entry.italic == italic
+                && entry.size_bits == font_size.to_bits()
+        });
+        if let Some(value) = index.and_then(|index| cache[index].widths.get(&c).copied()) {
+            return value;
+        }
+        let value = measure_char_width_embedded_uncached(font_family, bold, italic, c, font_size);
+        let index = index.unwrap_or_else(|| {
+            if cache.len() == GLYPH_CACHE_FONTS {
+                cache.remove(0);
+            }
+            cache.push(FontGlyphWidths {
+                family: font_family.to_owned(),
+                bold,
+                italic,
+                size_bits: font_size.to_bits(),
+                widths: std::collections::HashMap::new(),
+            });
+            cache.len() - 1
+        });
+        if cache[index].widths.len() == GLYPH_CACHE_CHARS {
+            cache[index].widths.clear();
+        }
+        cache[index].widths.insert(c, value);
+        value
+    })
+}
+
+fn measure_char_width_embedded_uncached(
     font_family: &str,
     bold: bool,
     italic: bool,
@@ -2512,4 +2571,59 @@ mod tests {
     // HWP5 의 `tab_extended[0]` 가 이미 right-tab 결과 위치 (= 우측 끝 - 한컴_seg_w)
     // 로 저장되어 있어 LEFT fallback 이 인코딩 의도와 정합. 본 테스트는 합성 데이터
     // 기반의 잘못된 가정 (RIGHT 정확 매치) 을 검증하던 것이라 삭제.
+}
+
+#[cfg(test)]
+mod glyph_width_cache_tests {
+    use super::*;
+
+    #[test]
+    fn cached_glyph_metrics_exactly_match_uncached_font_and_size_variants() {
+        for font in [
+            "함초롬바탕",
+            "한양신명조",
+            "휴먼명조",
+            "Arial",
+            "Missing Font",
+            "KoPub바탕",
+        ] {
+            for size in [9.0, 12.0, 18.6666667, 100.0] {
+                for bold in [false, true] {
+                    for italic in [false, true] {
+                        for ch in "한글가나다 abcXYZ·‘’😀\u{318d}\u{fffc}".chars() {
+                            let expected =
+                                measure_char_width_embedded_uncached(font, bold, italic, ch, size);
+                            assert_eq!(
+                                measure_char_width_embedded(font, bold, italic, ch, size),
+                                expected
+                            );
+                            assert_eq!(
+                                measure_char_width_embedded(font, bold, italic, ch, size),
+                                expected
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn glyph_metric_cache_is_bounded_across_font_and_character_churn() {
+        GLYPH_WIDTH_CACHE.with(|cache| cache.borrow_mut().clear());
+        for size in 1..=GLYPH_CACHE_FONTS + 5 {
+            for scalar in 1..=GLYPH_CACHE_CHARS + 5 {
+                if let Some(ch) = char::from_u32(scalar as u32) {
+                    measure_char_width_embedded("함초롬바탕", false, false, ch, size as f64);
+                }
+            }
+        }
+        GLYPH_WIDTH_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            assert!(cache.len() <= GLYPH_CACHE_FONTS);
+            assert!(cache
+                .iter()
+                .all(|font| font.widths.len() <= GLYPH_CACHE_CHARS));
+        });
+    }
 }

@@ -1,3 +1,4 @@
+import { structuredAddress, structuredNativePosition } from './embed/collaboration-structured-cell.ts';
 import { WasmBridge } from '@/core/wasm-bridge';
 import type { DocumentInfo, DocumentPosition } from '@/core/types';
 import { EventBus } from '@/core/event-bus';
@@ -75,9 +76,6 @@ const eventBus = new EventBus();
 const documentState = new DocumentDirtyState(eventBus);
 const selectionBridge = new SelectionBridge();
 eventBus.on('document-mutated', () => selectionBridge.noteDocumentMutation());
-eventBus.on('document-mutated', () => {
-  if (collaborationActive && !collaborationReadOnly) void collaborationLiveAdapter.captureLocal();
-});
 documentState.installBeforeUnload(window);
 const autosaveManager = new AutosaveManager({
   exportBytes: () => wasm.exportHwp(),
@@ -215,6 +213,8 @@ function captureBodyStructure(event: KeyboardEvent | ClipboardEvent): void {
   if (!inputHandler?.isEditorInput(event.target)) return;
   const input = inputHandler?.getBodyStructureInput();
   if (!input || inputHandler?.isCompositionActive()) return;
+  // Prompt anchors retain their body paragraph. Enter is a native soft line break.
+  if (wasm.hasPromptSpaces()) return;
   let action: 'enter' | 'backspace' | 'delete' | 'paste';
   let text = '';
   if (event instanceof KeyboardEvent) {
@@ -902,12 +902,16 @@ function setupEventListeners(): void {
     document.getElementById('sb-mode')!.textContent = (insertMode as boolean) ? '삽입' : '수정';
   });
 
-  eventBus.on('document-mutated', (reason) => {
+  eventBus.on('document-mutated', (reason, dirtyRegions) => {
     documentState.markDirty(typeof reason === 'string' ? reason : 'document-mutated');
+    collaborationLiveAdapter.noteMutation(documentState.revision(),
+      Array.isArray(dirtyRegions) && dirtyRegions.every(id => typeof id === 'string') ? dirtyRegions : undefined);
   });
 
-  eventBus.on('document-changed', (reason) => {
+  eventBus.on('document-changed', (reason, dirtyRegions) => {
     documentState.markDirty(typeof reason === 'string' ? reason : 'document-changed');
+    collaborationLiveAdapter.noteMutation(documentState.revision(),
+      Array.isArray(dirtyRegions) && dirtyRegions.every(id => typeof id === 'string') ? dirtyRegions : undefined);
   });
 
   eventBus.on('renderer-selection-changed', (payload) => {
@@ -1698,6 +1702,30 @@ installEmbedRuntime({
       await initPromise;
       wasm.setLivePastePolicy(policy);
     },
+    async executeWritingCommand(command) {
+      await initPromise;
+      if (!collaborationActive || !inputHandler?.canEditLiveSelection()
+        || wasm.hasRestrictedPromptSpaces() && command.startsWith('format:align-')) return false;
+      return dispatcher.dispatch(command);
+    },
+    async focusWritingSpace(regionId, offset) {
+      await initPromise;
+      const region = (await collaborationAdapter.getRegions()).find(r => (r.importAddress ?? r.id) === regionId);
+      if (!region || !Number.isSafeInteger(offset) || offset < 0 || offset > region.text.length) throw new TypeError('Invalid writing position');
+      if (region.structured) {
+        const address=structuredAddress(region.importAddress??region.id);
+        const position=address&&structuredNativePosition(wasm,address,offset);
+        if(!position) throw new TypeError('Invalid structured writing position');
+        inputHandler?.focusCollaborationPosition(position);
+        return;
+      }
+      const [, section, paragraph, control, cell] = regionId.split(':');
+      const before = region.text.slice(0, offset);
+      const parts = before.split('\n');
+      const index = parts.length - 1;
+      inputHandler?.focusCollaborationPosition({ sectionIndex: Number(section), paragraphIndex: Number(paragraph), charOffset: [...parts[index]].length,
+        ...(region.kind === 'cell' ? { parentParaIndex: Number(paragraph), controlIndex: Number(control), cellIndex: Number(cell), cellParaIndex: index } : {}) });
+    },
     async configureBodyStructure(configuration) {
       await initPromise;
       if (!collaborationActive) throw new BodyStructureNativeError('FORBIDDEN');
@@ -1750,19 +1778,20 @@ installEmbedRuntime({
       if (current) inputHandler?.restoreBodyStructureSelection(cursor, selection);
       return outcome;
     },
+    async getCollaborationRegionText(regionId) { await initPromise; return collaborationAdapter.getRegionText(regionId); },
     async getCollaborationRegions() {
       await initPromise;
       return collaborationAdapter.getRegions();
     },
     async getCollaborationPresence() {
       await initPromise;
-      return inputHandler ? readCollaborationPresence(inputHandler) : null;
+      return inputHandler ? readCollaborationPresence(inputHandler, wasm) : null;
     },
     async getCollaborationRegionRects(request) {
       await initPromise;
       return getCollaborationRegionRects(request, {
         wasm,
-        regions: (await collaborationAdapter.getRegions()).map((region) => ({ ...region, id: region.importAddress ?? region.id })),
+        regions: collaborationAdapter.getGeometryRegions(),
         zoom: canvasView?.getViewportManager().getZoom() ?? Number.NaN,
       });
     },
@@ -1786,7 +1815,7 @@ installEmbedRuntime({
     },
     async getCollaborationMutations(afterSequence) {
       await initPromise;
-      await collaborationLiveAdapter.captureLocal();
+      await collaborationLiveAdapter.capturePending();
       return collaborationLiveAdapter.drain(afterSequence);
     },
     async getSelectionSnapshot() {

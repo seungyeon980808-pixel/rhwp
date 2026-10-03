@@ -142,11 +142,14 @@ export interface EmbedRpcHandlers {
   collaborationActive?(): boolean;
   beginCollaboration?(): Promise<{ readonly schemaVersion: 1; readonly readOnly: true }>;
   beginLiveCollaboration?(): Promise<{ readonly schemaVersion: 1; readonly readOnly: false }>;
-  setLivePastePolicy?(policy: Readonly<{ epoch: string; writableRegionIds: readonly string[] }>): Promise<void>;
+  setLivePastePolicy?(policy: Readonly<{ epoch: string; writableRegionIds: readonly string[]; promptPolicy?: Readonly<{ memberId: string | null; spaces: readonly Readonly<{ id: string; regionId: string; start: number; end: number; memberId: string | null }>[]; texts: readonly Readonly<{ regionId: string; text: string }>[] }> }>): Promise<void>;
+  executeWritingCommand?(command: string): Promise<boolean>;
+  focusWritingSpace?(regionId: string, offset: number): Promise<void>;
   configureBodyStructure?(configuration: unknown): Promise<void>;
   getBodyStructureRequests?(): Promise<readonly BodyStructureRequest[]>;
   resolveBodyStructure?(resolution: unknown): Promise<BodyStructureResult | null>;
   applyRemoteBodyStructure?(request: unknown): Promise<BodyStructureRemoteResult>;
+  getCollaborationRegionText?(regionId: string): Promise<CollaborationRegionV1 | null>;
   getCollaborationRegions?(): Promise<readonly CollaborationRegionV1[]>;
   getCollaborationRegionRects?(request: CollaborationGeometryRequest): Promise<CollaborationRegionRectsV1>;
   getCollaborationPresence?(): Promise<CollaborationPresenceV1 | null>;
@@ -303,7 +306,29 @@ export async function routeEmbedRequest(
         || !Array.isArray(params.writableRegionIds) || params.writableRegionIds.length > 10_000
         || !params.writableRegionIds.every((id): id is string => typeof id === 'string' && /^(?:b:\d+:\d+|c:\d+:\d+:\d+:\d+)$/.test(id)))
         throw new TypeError('Invalid live paste policy');
-      return handlers.setLivePastePolicy({ epoch: params.epoch, writableRegionIds: params.writableRegionIds });
+      const promptPolicy = params.promptPolicy;
+      if (promptPolicy !== undefined) {
+        if (!promptPolicy || typeof promptPolicy !== 'object') throw new TypeError('Invalid prompt policy');
+        const p = promptPolicy as Record<string, unknown>;
+        if (!(p.memberId === null || typeof p.memberId === 'string') || !Array.isArray(p.spaces) || p.spaces.length > 100
+          || !p.spaces.every(s => s && typeof s.id === 'string' && typeof s.regionId === 'string'
+            && Number.isSafeInteger(s.start) && s.start >= 0 && Number.isSafeInteger(s.end) && s.end >= s.start
+            && (s.memberId === null || typeof s.memberId === 'string'))
+          || !Array.isArray(p.texts) || p.texts.length > 100 || !p.texts.every(t => t && typeof t.regionId === 'string'
+            && typeof t.text === 'string' && t.text.length <= 20000)) throw new TypeError('Invalid prompt policy');
+      }
+      return handlers.setLivePastePolicy({ epoch: params.epoch, writableRegionIds: params.writableRegionIds,
+        ...(promptPolicy !== undefined ? { promptPolicy: promptPolicy as NonNullable<Parameters<NonNullable<EmbedRpcHandlers['setLivePastePolicy']>>[0]['promptPolicy']> } : {}) });
+    }
+    case 'executeWritingCommand': {
+      if (!handlers.executeWritingCommand || typeof params.command !== 'string'
+        || !['format:bold', 'format:italic', 'format:align-left', 'format:align-center', 'format:align-right', 'format:align-justify'].includes(params.command)) throw new TypeError('Invalid writing command');
+      return handlers.executeWritingCommand(params.command);
+    }
+    case 'focusWritingSpace': {
+      if (!handlers.focusWritingSpace || typeof params.regionId !== 'string' || !/^(?:b:\d+:\d+|c:\d+:\d+:\d+:\d+)$/.test(params.regionId)
+        || typeof params.offset !== 'number' || !Number.isSafeInteger(params.offset) || params.offset < 0) throw new TypeError('Invalid writing position');
+      return handlers.focusWritingSpace(params.regionId, params.offset);
     }
     case 'configureBodyStructure': {
       if (!handlers.configureBodyStructure) throw new TypeError('Body structure is unavailable');
@@ -330,6 +355,12 @@ export async function routeEmbedRequest(
       const request = parseCollaborationGeometryRequest(rawParams);
       if (!handlers.getCollaborationRegionRects) throw new CollaborationGeometryError('unsupported-geometry');
       return handlers.getCollaborationRegionRects(request);
+    }
+    case 'getCollaborationRegionText': {
+      if (!handlers.getCollaborationRegionText) throw new Error('collaboration-text-v1 is not supported');
+      const value = params; const regionId = value && Reflect.get(value, 'regionId');
+      if (!value || Object.keys(value).length !== 1 || typeof regionId !== 'string' || !/^(b:\d+:\d+|c:\d+:\d+:\d+:\d+)$/.test(regionId)) throw new TypeError('Invalid region address');
+      return handlers.getCollaborationRegionText(regionId);
     }
     case 'getCollaborationRegions': {
       if (!handlers.getCollaborationRegions) {

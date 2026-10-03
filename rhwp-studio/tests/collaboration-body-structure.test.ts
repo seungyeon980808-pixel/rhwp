@@ -14,7 +14,7 @@ function harness() {
   wasm.loadDocument(bytes);
   const catalog = new CollaborationTextAdapter(wasm, { currentRevision: () => 0, afterApply: async () => {} });
   const original = catalog.getRegionsSync();
-  assert.equal(original.length, 136);
+  assert.equal(original.length, 138);
   let state = { epoch: randomUUID(), policyVersion: 1, topologyRevision: 0, durableAck: 0,
     revisions: original.map((region) => ({ regionId: region.id, revision: 0 })) };
   let composing = false;
@@ -41,7 +41,7 @@ for (const [name, start, end, text] of [
     const plan = h.adapter.prepare({ start: { regionId: 'b:0:14', offset: start }, end: { regionId: 'b:0:14', offset: end }, text }, randomUUID());
     const ids = plan.paragraphs.map((_, index) => index ? randomUUID() : 'b:0:14');
     const result = h.adapter.apply(plan, ids);
-    assert.equal(result.regions.length, 136 + plan.paragraphs.length - 1);
+    assert.equal(result.regions.length, 138 + plan.paragraphs.length - 1);
     assert.deepEqual(ids.map((id) => result.regions.find((region) => region.id === id)?.text), plan.paragraphs);
     for (const region of h.original.filter((entry) => entry.id !== 'b:0:14'))
       assert.equal(result.regions.find((entry) => entry.id === region.id)?.text, region.text);
@@ -76,7 +76,7 @@ test('cross-paragraph range delete preserves outside text and stable cell addres
   try {
     const plan = h.adapter.prepare({ start: { regionId: 'b:0:30', offset: 2 }, end: { regionId: 'b:0:32', offset: 3 }, text: '' }, randomUUID());
     const result = h.adapter.apply(plan, ['b:0:30']);
-    assert.equal(result.regions.length, 134);
+    assert.equal(result.regions.length, 136);
     assert.deepEqual(result.removedRegionIds, ['b:0:31', 'b:0:32']);
     assert.equal(result.regions.find((region) => region.id === 'b:0:30')?.text, plan.paragraphs[0]);
     assert.equal(result.regions.find((region) => region.id === 'c:0:83:0:0')?.importAddress, 'c:0:81:0:0');

@@ -32,12 +32,47 @@ test('canonical remote split converges without a recipient grant or a staged req
   try {
     const a = h.a.host.resolve({ planId: h.receipt.operation.operationId, receipt: h.receipt });
     const b = h.b.host.applyRemote({ before: h.original, receipt: h.receipt });
-    assert.equal(b.status, 'applied'); assert.equal(h.b.catalog.getRegionsSync().length, 137);
+    assert.equal(b.status, 'applied'); assert.equal(h.b.catalog.getRegionsSync().length, 139);
     assert.deepEqual(h.b.catalog.getRegionsSync(), a?.regions);
     assert.deepEqual(h.b.wasm.exportHwp(), h.a.wasm.exportHwp());
     const after = h.b.wasm.exportHwp();
     assert.equal(h.b.host.applyRemote({ before: h.original, receipt: h.receipt }).status, 'duplicate');
     assert.deepEqual(h.b.wasm.exportHwp(), after);
+  } finally { h.close(); }
+});
+
+test('saved body soft breaks survive local and remote split, merge, and HWP/HWPX reopen', () => {
+  const h = setup('😀\n');
+  try {
+    const originalText = h.original.regions.find(region => region.importAddress === 'b:0:14')!.text;
+    assert.ok(originalText.includes('\v'));
+    const split = h.a.host.resolve({ planId: h.receipt.operation.operationId, receipt: h.receipt }); assert.ok(split);
+    const remote = h.b.host.applyRemote({ before: h.original, receipt: h.receipt });
+    assert.equal(remote.status, 'applied');
+    assert.deepEqual(h.b.catalog.getRegionsSync(), split.regions);
+    assert.equal(split.regions.find(region => region.importAddress === 'b:0:15')!.text, originalText.slice(2));
+    const before = { ...h.original, topologyRevision: 1, durableAck: 1, regions: split.regions.map(region => ({
+      id: region.id, importAddress: region.importAddress ?? region.id, text: region.text,
+      revision: h.receipt.regionIds.includes(region.id) ? (h.original.regions.find(entry => entry.id === region.id)?.revision ?? -1) + 1 : 0,
+    })) };
+    h.a.host.configure({ ...before, writableRegionIds: before.regions.map(region => region.id) });
+    h.b.host.configure(before);
+    const join = h.a.host.stage('backspace', { sectionIndex: 0, paragraphIndex: 15, charOffset: 0 }, null); assert.ok(join);
+    const receipt = { operation: join.operation, actorKey: 'owner', durableAck: 2, topologyRevision: 2,
+      regionIds: [join.operation.start.regionId], removedRegionIds: [join.operation.end.regionId] };
+    const merged = h.a.host.resolve({ planId: join.planId, receipt }); assert.ok(merged);
+    assert.equal(h.b.host.applyRemote({ before, receipt }).status, 'applied');
+    assert.deepEqual(h.b.catalog.getRegionsSync(), merged.regions);
+    assert.equal(merged.regions.find(region => region.importAddress === 'b:0:14')!.text, originalText);
+    for (const bytes of [h.b.wasm.exportHwp(), h.b.wasm.exportHwpx()]) {
+      const reopened = new WasmBridge(); reopened.loadDocument(bytes);
+      try {
+        const catalog = new CollaborationTextAdapter(reopened);
+        assert.equal(catalog.getRegionsSync().find(region => region.id === 'b:0:14')!.text, originalText);
+        assert.equal(reopened.getParagraphCount(0), h.b.wasm.getParagraphCount(0));
+        assert.deepEqual(reopened.getParaPropertiesAt(0, 14), h.b.wasm.getParaPropertiesAt(0, 14));
+      } finally { reopened.releaseDocument(); }
+    }
   } finally { h.close(); }
 });
 
@@ -139,7 +174,7 @@ test('remote native failure restores bytes and the same receipt can resume succe
     assert.deepEqual(h.b.wasm.exportHwp(), bytesBefore); assert.deepEqual(h.b.catalog.getRegionsSync(), catalogBefore);
     h.b.catalog.remapStructure = remap;
     assert.equal(h.b.host.applyRemote({ before: h.original, receipt: h.receipt }).status, 'applied');
-    assert.equal(h.b.catalog.getRegionsSync().length, 137);
+    assert.equal(h.b.catalog.getRegionsSync().length, 139);
   } finally { h.close(); }
 });
 

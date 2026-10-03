@@ -371,6 +371,120 @@ struct PreflightState {
 }
 
 impl DocumentCore {
+    pub fn collaboration_body_paragraph_json(
+        &self,
+        section: usize,
+        paragraph: usize,
+    ) -> Result<String, HwpError> {
+        let para = self
+            .document()
+            .sections
+            .get(section)
+            .and_then(|s| s.paragraphs.get(paragraph))
+            .ok_or_else(|| HwpError::RenderError("Missing paragraph".into()))?;
+        Ok(self
+            .collaboration_paragraph_value(section, para)
+            .to_string())
+    }
+
+    fn collaboration_paragraph_value(&self, section: usize, para: &Paragraph) -> serde_json::Value {
+        let mut starts = Vec::new();
+        let mut previous = None;
+        for (index, ch) in para.text.chars().enumerate() {
+            let key = (
+                para.char_shape_id_at(index),
+                crate::renderer::style_resolver::detect_lang_category(ch),
+            );
+            if previous != Some(key) {
+                starts.push(index);
+                previous = Some(key);
+            }
+        }
+        serde_json::json!({"text":para.text,"charRunStarts":starts,
+            "paragraph":serde_json::from_str::<serde_json::Value>(
+                &self.build_para_properties_json(para.para_shape_id,section)).unwrap_or_default()})
+    }
+
+    /// Read a single outer cell without inspecting the rest of the document.
+    /// Nested tables remain native objects; this view only addresses their text.
+    pub fn collaboration_structured_cell_json(
+        &self,
+        section: usize,
+        parent: usize,
+        control: usize,
+        cell_index: usize,
+    ) -> Result<String, HwpError> {
+        let cell = self.resolve_cell_by_path(section, parent, &[(control, cell_index, 0)])?;
+        fn visit(
+            core: &DocumentCore,
+            section: usize,
+            cell: &Cell,
+            path: &mut Vec<serde_json::Value>,
+            blocks: &mut Vec<serde_json::Value>,
+            topology: &mut Vec<serde_json::Value>,
+            depth: usize,
+        ) -> bool {
+            if depth > 16 || blocks.len() >= 2000 {
+                return false;
+            }
+            let mut paragraphs = Vec::new();
+            for para in &cell.paragraphs {
+                if para
+                    .controls
+                    .iter()
+                    .any(|c| !matches!(c, Control::Table(_)))
+                {
+                    return false;
+                }
+                paragraphs.push(core.collaboration_paragraph_value(section, para));
+            }
+            blocks.push(serde_json::json!({"path": path, "paragraphs": paragraphs}));
+            for (pi, para) in cell.paragraphs.iter().enumerate() {
+                for (ci, ctrl) in para.controls.iter().enumerate() {
+                    let Control::Table(table) = ctrl else {
+                        return false;
+                    };
+                    topology.push(serde_json::json!({"rows": table.row_count, "cols": table.col_count,
+                        "cells": table.cells.iter().map(|c| (c.row,c.col,c.row_span,c.col_span)).collect::<Vec<_>>()}));
+                    if let Some(last) = path.last_mut() {
+                        last["cellParaIdx"] = pi.into();
+                    }
+                    for (cell_idx, child) in table.cells.iter().enumerate() {
+                        path.push(
+                            serde_json::json!({"controlIdx":ci,"cellIdx":cell_idx,"cellParaIdx":0}),
+                        );
+                        if !visit(core, section, child, path, blocks, topology, depth + 1) {
+                            return false;
+                        }
+                        path.pop();
+                    }
+                }
+            }
+            if let Some(last) = path.last_mut() {
+                last["cellParaIdx"] = 0.into();
+            }
+            true
+        }
+        let mut blocks = Vec::new();
+        let mut topology = Vec::new();
+        let mut path =
+            vec![serde_json::json!({"controlIdx":control,"cellIdx":cell_index,"cellParaIdx":0})];
+        let supported = visit(
+            self,
+            section,
+            cell,
+            &mut path,
+            &mut blocks,
+            &mut topology,
+            0,
+        );
+        Ok(
+            serde_json::json!({"supported":supported,"nested":!topology.is_empty(),
+            "blocks":blocks,"topology":topology})
+            .to_string(),
+        )
+    }
+
     /// 구조 digest와 해시 기반 등록 후보를 반환한다. 원문 텍스트는 포함하지 않는다.
     pub fn inspect_approved_template_json(&self) -> String {
         let structure_digest = approved_structure_digest(self.document());
@@ -1104,13 +1218,15 @@ fn hash_control(hasher: &mut Sha256, control: &Control, cell_text_structure: boo
                     u8::from(cell.is_header),
                     u8::from(cell.cell_protect()),
                 ]);
-                if cell_text_structure
-                    && !cell.paragraphs.is_empty()
-                    && cell.paragraphs.iter().all(|paragraph| {
-                        paragraph.controls.is_empty() && !paragraph.text.contains('\u{fffc}')
-                    })
-                {
-                    hasher.update(b"plain-cell-paragraphs");
+                if cell_text_structure && !cell.paragraphs.is_empty() {
+                    // Text paragraph boundaries may change inside an assigned outer cell.
+                    // Preserve every nested control's topology independently of paragraph placement.
+                    hasher.update(b"collaboration-cell-text");
+                    for paragraph in &cell.paragraphs {
+                        for control in &paragraph.controls {
+                            hash_control(hasher, control, true);
+                        }
+                    }
                 } else {
                     hash_usize(hasher, cell.paragraphs.len());
                     hash_paragraphs(hasher, &cell.paragraphs, cell_text_structure);

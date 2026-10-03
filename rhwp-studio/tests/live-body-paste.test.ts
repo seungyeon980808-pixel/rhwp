@@ -26,7 +26,7 @@ for (const [name, operation] of operations) test(`live ${name} preserves catalog
   try {
     const catalog = new CollaborationTextAdapter(wasm, { currentRevision: () => 0, afterApply: async () => {} });
     const live = new CollaborationLiveAdapter(wasm, { regions: () => catalog.getRegions(), revision: () => 0, refresh: async () => {} });
-    assert.equal((await catalog.getRegions()).length, 136);
+    assert.equal((await catalog.getRegions()).length, 138);
     await live.begin();
     wasm.insertText(0, 14, 0, 'PENDING');
     const before = wasm.inspectApprovedTemplate();
@@ -38,9 +38,9 @@ for (const [name, operation] of operations) test(`live ${name} preserves catalog
     wasm.insertText(0, 14, 0, 'LOCAL');
     await live.captureLocal();
     const mutations = live.drain(0).filter((mutation) => mutation.origin === 'local');
-    console.log(JSON.stringify({ scenario: name, catalogBefore: 136, catalogAfter: count, mutations: mutations.length, native: mutations[0]?.text, reason }));
+    console.log(JSON.stringify({ scenario: name, catalogBefore: 138, catalogAfter: count, mutations: mutations.length, native: mutations[0]?.text, reason }));
     // Then the original/pending content survives and LOCAL remains publishable.
-    assert.equal(count, 136);
+    assert.equal(count, 138);
     assert.ok(reason.includes('공동편집'));
     assert.equal(mutations.length, 1);
     assert.ok(mutations[0]?.text.startsWith('LOCALPENDING'));
@@ -64,7 +64,7 @@ test('live plain single-line paste retains Korean text and captures one mutation
     const mutations = live.drain(0).filter((mutation) => mutation.origin === 'local');
     assert.equal(mutations.length, 1);
     assert.ok(mutations[0]?.text.startsWith('한글 LOCAL'));
-    assert.equal((await catalog.getRegions()).length, 136);
+    assert.equal((await catalog.getRegions()).length, 138);
   } finally { wasm.releaseDocument(); }
 });
 
@@ -90,7 +90,7 @@ for (const [name, html, text, selection] of [
   Object.defineProperty(globalThis, 'window', { configurable: true, value: { alert: (reason: string) => reasons.push(reason) } });
   try {
     const catalog = new CollaborationTextAdapter(wasm, { currentRevision: () => 0, afterApply: async () => {} });
-    assert.equal((await catalog.getRegions()).length, 136);
+    assert.equal((await catalog.getRegions()).length, 138);
     wasm.insertText(0, 14, 0, 'PENDING');
     const before = wasm.inspectApprovedTemplate();
     let prevented = false;
@@ -104,8 +104,8 @@ for (const [name, html, text, selection] of [
     assert.equal(reasons.length, 1);
     assert.ok(reasons[0]?.includes('기존 내용은 보존'));
     assert.deepEqual(wasm.inspectApprovedTemplate(), before);
-    assert.equal((await catalog.getRegions()).length, 136);
-    console.log(JSON.stringify({ scenario: name, prevented, reason: reasons[0], catalog: 136, unchanged: true }));
+    assert.equal((await catalog.getRegions()).length, 138);
+    console.log(JSON.stringify({ scenario: name, prevented, reason: reasons[0], catalog: 138, unchanged: true }));
   } finally {
     wasm.releaseDocument();
     if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow);

@@ -300,7 +300,7 @@ fn approved_template_blocks_covered_and_picture_cells() {
     };
     table.cells[0].paragraphs[0]
         .controls
-        .push(Control::Table(Box::new(Default::default())));
+        .push(Control::Table(Box::default()));
     let nested_inspection: serde_json::Value =
         serde_json::from_str(&nested.inspect_approved_template_json()).expect("nested inspection");
     assert_eq!(nested_inspection["protection"]["status"], "protected");
@@ -29096,4 +29096,53 @@ fn issue_4576_rebuild_derived_state_recomputes_composition_and_pagination() {
         baseline_tree,
         "페이지 트리가 기준선과 같아야 한다 (옛 코드 잔재 없음)"
     );
+}
+
+#[test]
+fn collaboration_structured_query_keeps_outer_cell_and_nested_paths() {
+    let data = std::fs::read("samples/inner-table-01.hwp").unwrap();
+    let doc = HwpDocument::from_bytes(&data).unwrap();
+    let inspection: serde_json::Value =
+        serde_json::from_str(&doc.inspect_approved_template_json()).unwrap();
+    let mut nested_count = 0;
+    for candidate in inspection["tableCells"].as_array().unwrap() {
+        let a = &candidate["resolvedAddress"];
+        let args = [
+            "sectionIndex",
+            "paragraphIndex",
+            "controlIndex",
+            "cellIndex",
+        ]
+        .map(|key| a[key].as_u64().unwrap() as usize);
+        let value: serde_json::Value = serde_json::from_str(
+            &doc.collaboration_structured_cell_json(args[0], args[1], args[2], args[3])
+                .unwrap(),
+        )
+        .unwrap();
+        if value["nested"] != true {
+            continue;
+        }
+        nested_count += 1;
+        assert_eq!(value["supported"], true);
+        let blocks = value["blocks"].as_array().unwrap();
+        assert!(blocks.len() > 1);
+        assert_eq!(blocks[0]["path"].as_array().unwrap().len(), 1);
+        assert!(blocks
+            .iter()
+            .skip(1)
+            .all(|block| block["path"].as_array().unwrap().len() > 1));
+        for block in blocks {
+            for paragraph in block["paragraphs"].as_array().unwrap() {
+                let text = paragraph["text"].as_str().unwrap();
+                let starts = paragraph["charRunStarts"].as_array().unwrap();
+                if !text.is_empty() {
+                    assert_eq!(starts[0], 0);
+                }
+                assert!(starts
+                    .iter()
+                    .all(|i| i.as_u64().unwrap() < text.chars().count() as u64));
+            }
+        }
+    }
+    assert_eq!(nested_count, 1);
 }

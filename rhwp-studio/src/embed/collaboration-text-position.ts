@@ -5,9 +5,12 @@ export type CollaborationTextChange = Readonly<{
   nativeAddress: string;
   before: string;
   ops: readonly CollaborationOpV1[];
+  /** Native-only remap, never serialized across collaboration transport. */
+  remapPosition?: (position: DocumentPosition) => DocumentPosition;
 }>;
 
 export function remapCollaborationTextPosition(position: DocumentPosition, change: CollaborationTextChange): DocumentPosition {
+  if (change.remapPosition) return change.remapPosition(position);
   if (position.isTextBox || (position.cellPath?.length ?? 0) > 1) return position;
   const cell = position.parentParaIndex !== undefined;
   const address = cell

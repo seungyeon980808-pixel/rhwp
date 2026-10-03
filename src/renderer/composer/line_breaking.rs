@@ -185,6 +185,28 @@ fn tokenize_paragraph_with_split_cell_space_metric(
         return Vec::new();
     }
 
+    // Scoped to this immutable style set and tokenization pass. Repeated single
+    // glyph tokens otherwise rebuild an owned TextStyle and temporary vectors
+    // for every character. The key retains shape and language authority.
+    let mut single_metrics = std::collections::HashMap::new();
+    let mut single_metric = |style_id, lang, ch: char| {
+        *single_metrics
+            .entry((style_id, lang, ch))
+            .or_insert_with(|| {
+                let ts = resolved_to_text_style(styles, style_id, lang);
+                let fs = if ts.font_size > 0.0 {
+                    ts.font_size
+                } else {
+                    12.0
+                };
+                let mut bytes = [0u8; 4];
+                (
+                    estimate_text_width_unrounded(ch.encode_utf8(&mut bytes), &ts),
+                    fs,
+                )
+            })
+    };
+    let mut style_cache = std::collections::HashMap::new();
     let mut tokens = Vec::new();
     let mut i = 0;
     let mut current_lang: usize = 0;
@@ -207,7 +229,9 @@ fn tokenize_paragraph_with_split_cell_space_metric(
                 i as u32
             };
             let style_id = find_active_char_shape(char_shapes, utf16_pos);
-            let ts = resolved_to_text_style(styles, style_id, current_lang);
+            let ts = style_cache
+                .entry((style_id, current_lang))
+                .or_insert_with(|| resolved_to_text_style(styles, style_id, current_lang));
             let font_size = if ts.font_size > 0.0 {
                 ts.font_size
             } else {
@@ -229,7 +253,9 @@ fn tokenize_paragraph_with_split_cell_space_metric(
                 i as u32
             };
             let style_id = find_active_char_shape(char_shapes, utf16_pos);
-            let ts = resolved_to_text_style(styles, style_id, current_lang);
+            let ts = style_cache
+                .entry((style_id, current_lang))
+                .or_insert_with(|| resolved_to_text_style(styles, style_id, current_lang));
             let font_size = if ts.font_size > 0.0 {
                 ts.font_size
             } else {
@@ -291,7 +317,9 @@ fn tokenize_paragraph_with_split_cell_space_metric(
                         current_lang = detected;
                         detected
                     };
-                    let ts = resolved_to_text_style(styles, style_id, lang);
+                    let ts = style_cache
+                        .entry((style_id, lang))
+                        .or_insert_with(|| resolved_to_text_style(styles, style_id, lang));
                     let fs = if ts.font_size > 0.0 {
                         ts.font_size
                     } else {
@@ -324,7 +352,9 @@ fn tokenize_paragraph_with_split_cell_space_metric(
                         current_lang = detected;
                         detected
                     };
-                    let ts = resolved_to_text_style(styles, style_id, lang);
+                    let ts = style_cache
+                        .entry((style_id, lang))
+                        .or_insert_with(|| resolved_to_text_style(styles, style_id, lang));
                     let fs = if ts.font_size > 0.0 {
                         ts.font_size
                     } else {
@@ -364,13 +394,7 @@ fn tokenize_paragraph_with_split_cell_space_metric(
                 };
                 let style_id = find_active_char_shape(char_shapes, utf16_pos);
                 current_lang = detect_lang_category(ch);
-                let ts = resolved_to_text_style(styles, style_id, current_lang);
-                let fs = if ts.font_size > 0.0 {
-                    ts.font_size
-                } else {
-                    12.0
-                };
-                let w = estimate_text_width_unrounded(&ch.to_string(), &ts);
+                let (w, fs) = single_metric(style_id, current_lang, ch);
                 tokens.push(BreakToken::Text {
                     start_idx: i,
                     end_idx: i + 1,
@@ -408,7 +432,9 @@ fn tokenize_paragraph_with_split_cell_space_metric(
                         };
                         let style_id = find_active_char_shape(char_shapes, utf16_pos);
                         let lang = 1usize; // English
-                        let ts = resolved_to_text_style(styles, style_id, lang);
+                        let ts = style_cache
+                            .entry((style_id, lang))
+                            .or_insert_with(|| resolved_to_text_style(styles, style_id, lang));
                         let fs = if ts.font_size > 0.0 {
                             ts.font_size
                         } else {
@@ -434,7 +460,9 @@ fn tokenize_paragraph_with_split_cell_space_metric(
                         current_lang = 1; // English
                         1
                     };
-                    let ts = resolved_to_text_style(styles, style_id, lang);
+                    let ts = style_cache
+                        .entry((style_id, lang))
+                        .or_insert_with(|| resolved_to_text_style(styles, style_id, lang));
                     let fs = if ts.font_size > 0.0 {
                         ts.font_size
                     } else {
@@ -467,7 +495,9 @@ fn tokenize_paragraph_with_split_cell_space_metric(
                             };
                             let sid = find_active_char_shape(char_shapes, u16p);
                             let lang = if is_lang_neutral(c) { current_lang } else { 1 };
-                            let ts = resolved_to_text_style(styles, sid, lang);
+                            let ts = style_cache
+                                .entry((sid, lang))
+                                .or_insert_with(|| resolved_to_text_style(styles, sid, lang));
                             estimate_text_width_unrounded(&c.to_string(), &ts)
                         })
                         .collect();
@@ -489,13 +519,7 @@ fn tokenize_paragraph_with_split_cell_space_metric(
                 };
                 let style_id = find_active_char_shape(char_shapes, utf16_pos);
                 current_lang = 1;
-                let ts = resolved_to_text_style(styles, style_id, current_lang);
-                let fs = if ts.font_size > 0.0 {
-                    ts.font_size
-                } else {
-                    12.0
-                };
-                let w = estimate_text_width_unrounded(&ch.to_string(), &ts);
+                let (w, fs) = single_metric(style_id, current_lang, ch);
                 tokens.push(BreakToken::Text {
                     start_idx: i,
                     end_idx: i + 1,
@@ -517,13 +541,7 @@ fn tokenize_paragraph_with_split_cell_space_metric(
             };
             let style_id = find_active_char_shape(char_shapes, utf16_pos);
             current_lang = detect_lang_category(ch);
-            let ts = resolved_to_text_style(styles, style_id, current_lang);
-            let fs = if ts.font_size > 0.0 {
-                ts.font_size
-            } else {
-                12.0
-            };
-            let w = estimate_text_width_unrounded(&ch.to_string(), &ts);
+            let (w, fs) = single_metric(style_id, current_lang, ch);
             tokens.push(BreakToken::Text {
                 start_idx: i,
                 end_idx: i + 1,
@@ -550,13 +568,7 @@ fn tokenize_paragraph_with_split_cell_space_metric(
                 current_lang = detected;
                 detected
             };
-            let ts = resolved_to_text_style(styles, style_id, lang);
-            let fs = if ts.font_size > 0.0 {
-                ts.font_size
-            } else {
-                12.0
-            };
-            let w = estimate_text_width_unrounded(&ch.to_string(), &ts);
+            let (w, fs) = single_metric(style_id, lang, ch);
             tokens.push(BreakToken::Text {
                 start_idx: i,
                 end_idx: i + 1,
@@ -568,6 +580,9 @@ fn tokenize_paragraph_with_split_cell_space_metric(
         }
     }
 
+    debug_assert!(tokens
+        .windows(2)
+        .all(|pair| token_start(&pair[0]) <= token_start(&pair[1])));
     tokens
 }
 
@@ -958,10 +973,32 @@ fn fill_lines(
     results
 }
 
+// Tokenization emits nonoverlapping tokens in increasing source order. Keep
+// accumulation forward and exclude the current token as before, but skip the
+// already-consumed prefix with a binary search instead of rescanning every line.
+fn token_start(token: &BreakToken) -> usize {
+    match token {
+        BreakToken::Text { start_idx, .. } => *start_idx,
+        BreakToken::Space { idx, .. }
+        | BreakToken::Tab { idx, .. }
+        | BreakToken::LineBreak { idx } => *idx,
+    }
+}
+
+fn line_suffix(
+    tokens: &[BreakToken],
+    current_token_idx: usize,
+    new_line_start: usize,
+) -> &[BreakToken] {
+    let prefix = &tokens[..current_token_idx];
+    let start = prefix.partition_point(|token| token_start(token) < new_line_start);
+    &prefix[start..]
+}
+
 /// 줄 바꿈 지점 이후 토큰의 누적 폭 재계산 (HWPUNIT)
 fn recalc_width_hwp(tokens: &[BreakToken], current_token_idx: usize, new_line_start: usize) -> i32 {
     let mut w = 0i32;
-    for t in &tokens[..current_token_idx] {
+    for t in line_suffix(tokens, current_token_idx, new_line_start) {
         match t {
             BreakToken::Text {
                 start_idx, width, ..
@@ -985,7 +1022,7 @@ fn recalc_space_savings_hwp(
     condense_min_space: u8,
 ) -> i32 {
     let mut w = 0i32;
-    for t in &tokens[..current_token_idx] {
+    for t in line_suffix(tokens, current_token_idx, new_line_start) {
         match t {
             BreakToken::Space {
                 idx,
@@ -1859,5 +1896,161 @@ mod utf16_offset_tests {
         };
 
         assert_eq!(char_index_to_utf16_offset(&para, 2), 3);
+    }
+}
+
+#[cfg(test)]
+mod single_glyph_token_cache_tests {
+    use super::*;
+    use crate::renderer::style_resolver::ResolvedCharStyle;
+
+    #[test]
+    fn repeated_glyphs_preserve_exact_width_across_style_and_language_changes() {
+        let chars: Vec<char> = "가나다가나다漢字かな😀가나다가나다漢字かな😀"
+            .chars()
+            .collect();
+        let mut utf16 = 0;
+        let offsets: Vec<u32> = chars
+            .iter()
+            .map(|ch| {
+                let at = utf16;
+                utf16 += ch.len_utf16() as u32;
+                at
+            })
+            .collect();
+        for size in [9.0, 12.0, 17.25] {
+            let styles = ResolvedStyleSet {
+                char_styles: vec![
+                    ResolvedCharStyle {
+                        font_family: "함초롬바탕".into(),
+                        font_size: size,
+                        ..Default::default()
+                    },
+                    ResolvedCharStyle {
+                        font_family: "Arial".into(),
+                        font_size: size * 1.5,
+                        bold: true,
+                        ratio: 0.85,
+                        letter_spacing: -0.2,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            };
+            let shapes = vec![
+                CharShapeRef {
+                    start_pos: 0,
+                    char_shape_id: 0,
+                },
+                CharShapeRef {
+                    start_pos: offsets[12],
+                    char_shape_id: 1,
+                },
+            ];
+            let tokens = tokenize_paragraph(&chars, &offsets, &shapes, &styles, 2, 1);
+            assert_eq!(tokens.len(), chars.len());
+            for (index, token) in tokens.iter().enumerate() {
+                let lang = detect_lang_category(chars[index]);
+                let style = resolved_to_text_style(
+                    &styles,
+                    find_active_char_shape(&shapes, offsets[index]),
+                    lang,
+                );
+                let expected = estimate_text_width_unrounded(&chars[index].to_string(), &style);
+                match token {
+                    BreakToken::Text {
+                        width,
+                        max_font_size,
+                        ..
+                    } => {
+                        assert_eq!(*width, expected);
+                        assert_eq!(*max_font_size, style.font_size);
+                    }
+                    other => panic!("unexpected token {other:?}"),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod line_suffix_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_suffix_matches_full_scan_at_every_boundary() {
+        let tokens = vec![
+            BreakToken::Text {
+                start_idx: 0,
+                end_idx: 3,
+                width: 12.45,
+                max_font_size: 12.0,
+                char_widths: vec![],
+            },
+            BreakToken::Space {
+                idx: 3,
+                width: 4.1,
+                max_font_size: 12.0,
+            },
+            BreakToken::Tab {
+                idx: 4,
+                max_font_size: 12.0,
+            },
+            BreakToken::Text {
+                start_idx: 5,
+                end_idx: 8,
+                width: 19.3,
+                max_font_size: 12.0,
+                char_widths: vec![],
+            },
+            BreakToken::LineBreak { idx: 8 },
+            BreakToken::Space {
+                idx: 9,
+                width: 5.01,
+                max_font_size: 14.0,
+            },
+            BreakToken::Text {
+                start_idx: 10,
+                end_idx: 11,
+                width: 7.77,
+                max_font_size: 14.0,
+                char_widths: vec![],
+            },
+        ];
+        for current in 0..=tokens.len() {
+            for start in 0..=12 {
+                let reference_width: i32 = tokens[..current]
+                    .iter()
+                    .filter_map(|token| match token {
+                        BreakToken::Text {
+                            start_idx, width, ..
+                        } if *start_idx >= start => Some(to_hwp(*width)),
+                        BreakToken::Space { idx, width, .. } if *idx >= start => {
+                            Some(to_hwp(*width))
+                        }
+                        _ => None,
+                    })
+                    .sum();
+                assert_eq!(recalc_width_hwp(&tokens, current, start), reference_width);
+                for condense in [0, 20, 50, 100] {
+                    let reference_saving: i32 = tokens[..current]
+                        .iter()
+                        .filter_map(|token| match token {
+                            BreakToken::Space { idx, width, .. } if *idx >= start => {
+                                Some(condense_space_savings_hwp(to_hwp(*width), condense))
+                            }
+                            _ => None,
+                        })
+                        .sum();
+                    assert_eq!(
+                        recalc_space_savings_hwp(&tokens, current, start, condense),
+                        reference_saving
+                    );
+                }
+                assert!(line_suffix(&tokens, current, start)
+                    .iter()
+                    .all(|token| token_start(token) >= start));
+            }
+        }
     }
 }

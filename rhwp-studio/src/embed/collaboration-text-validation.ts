@@ -45,3 +45,20 @@ export function booleanValue(value: unknown, key: string): boolean | null {
   const entry = Reflect.get(value, key);
   return typeof entry === 'boolean' ? entry : null;
 }
+
+/** Wire LF separates cell paragraphs; VT encodes a native soft line break.
+ * Both occupy one UTF-16 unit, preserving all selection/format offsets. Native
+ * VT remains unsupported, so decoding cannot confuse existing valid content.
+ */
+export function encodeCollaborationParagraph(text: string): string | null {
+  if (text.length > MAX_COLLABORATION_TEXT_CHARS || /[\u0000-\u0009\u000b-\u001f\u007f\ufffc]/u.test(text)) return null;
+  return text.replaceAll('\n', '\v');
+}
+
+export function isCollaborationParagraph(text: string): boolean {
+  return text.length <= MAX_COLLABORATION_TEXT_CHARS && !/[\u0000-\u000a\u000c-\u001f\u007f\ufffc]/u.test(text);
+}
+
+export function decodeCollaborationParagraph(text: string): string {
+  return text.replaceAll('\v', '\n');
+}

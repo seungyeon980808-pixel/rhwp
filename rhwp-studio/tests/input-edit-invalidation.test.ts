@@ -44,7 +44,7 @@ test('raw IME/iOS 입력은 flow effect를 cursor lookup 전에 소비하고 ref
 
   assert.match(
     inputHandlerSource,
-    /private afterTextInputEdit\(\s*beforePos: DocumentPosition,\s*afterPos: DocumentPosition,\s*pageLocalOptions: PageLocalTextEditOptions = \{\},\s*boundaryHandled = false,\s*\): void \{\s*if \(boundaryHandled\) \{\s*this\.afterEdit\(false\);\s*return;\s*\}/,
+    /private afterTextInputEdit\(\s*beforePos: DocumentPosition,\s*afterPos: DocumentPosition,\s*pageLocalOptions: PageLocalTextEditOptions = \{\},\s*boundaryHandled = false,\s*\): void \{\s*const dirtyRegions = [\s\S]*?;\s*if \(boundaryHandled\) \{\s*this\.afterEdit\(false, dirtyRegions\);\s*return;\s*\}/,
   );
   assert.match(
     textSource,

@@ -1,3 +1,4 @@
+import { structuredPosition, type StructuredCellReader } from './collaboration-structured-cell.ts';
 import type { DocumentPosition } from '../core/types.ts';
 
 export type CollaborationPresenceV1 = Readonly<{
@@ -32,10 +33,17 @@ function regionId(position: DocumentPosition): string {
 export function readCollaborationPresence(input: Readonly<{
   getCursorPosition(): DocumentPosition;
   getSelection(): Readonly<{ start: DocumentPosition; end: DocumentPosition }> | null;
-}>): CollaborationPresenceV1 | null {
+}>, wasm?: StructuredCellReader): CollaborationPresenceV1 | null {
   const cursor = input.getCursorPosition();
-  const id = regionId(cursor);
   const selection = input.getSelection();
+  const structured = wasm && structuredPosition(wasm,cursor);
+  if(structured) {
+    const other=selection ? (JSON.stringify(selection.start)===JSON.stringify(cursor) ? selection.end : selection.start) : cursor;
+    const anchor=structuredPosition(wasm!,other);
+    if(!anchor||anchor.id!==structured.id) throw new CollaborationPresenceError('cursor-outside-selection');
+    return {regionId:structured.id,anchorOffset:anchor.offset,focusOffset:structured.offset};
+  }
+  const id = regionId(cursor);
   const matchesCursor = (position: DocumentPosition) => regionId(position) === id
     && (position.cellParaIndex ?? 0) === (cursor.cellParaIndex ?? 0)
     && position.charOffset === cursor.charOffset;
