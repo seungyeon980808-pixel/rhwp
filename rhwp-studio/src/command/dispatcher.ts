@@ -1,7 +1,7 @@
 import type { EventBus } from '@/core/event-bus';
 import type { CommandRegistry } from './registry';
 import type { CommandServices, EditorContext } from './types';
-import { isUnsupportedLiveFormat } from '../embed/collaboration-format-boundary.ts';
+import { isUnsupportedLiveFormat, unsupportedLiveFormatReason } from '../embed/collaboration-format-boundary.ts';
 import { isUnsupportedLiveStructure, unsupportedLiveStructureReason } from '../embed/collaboration-structure-boundary.ts';
 
 const FORM_MODE_BLOCKED_IDS = new Set([
@@ -48,14 +48,9 @@ export class CommandDispatcher {
       return false;
     }
 
-    if (this.services.wasm?.hasRestrictedPromptSpaces?.() && commandId.startsWith("format:align-")) return false;
-    const ctx = this.services.getContext();
-    if (isBlockedInFormMode(commandId, ctx) || isUnsupportedLiveFormat(commandId, ctx.isLiveCollaboration === true)
-      || isUnsupportedLiveStructure(commandId, ctx.isLiveCollaboration === true)) {
-      return false;
-    }
-    if (def.canExecute && !def.canExecute(ctx)) {
-      // canExecute 실패 — 비활성 상태
+    const reason = this.disabledReason(commandId);
+    if (reason) {
+      this.eventBus.emit('command-blocked', reason);
       return false;
     }
 
@@ -75,18 +70,23 @@ export class CommandDispatcher {
    * 메뉴/툴바의 enabled/disabled 상태 갱신에 사용.
    */
   isEnabled(commandId: string): boolean {
-    const def = this.registry.get(commandId);
-    if (!def) return false;
-    if (this.services.wasm?.hasRestrictedPromptSpaces?.() && commandId.startsWith("format:align-")) return false;
-    const ctx = this.services.getContext();
-    if (isBlockedInFormMode(commandId, ctx) || isUnsupportedLiveFormat(commandId, ctx.isLiveCollaboration === true)
-      || isUnsupportedLiveStructure(commandId, ctx.isLiveCollaboration === true)) return false;
-    if (!def.canExecute) return true;
-    return def.canExecute(ctx);
+    return this.registry.get(commandId) !== undefined && this.disabledReason(commandId) === undefined;
   }
 
   disabledReason(commandId: string): string | undefined {
-    return isUnsupportedLiveStructure(commandId, this.services.getContext().isLiveCollaboration === true)
-      ? unsupportedLiveStructureReason : undefined;
+    const def = this.registry.get(commandId);
+    if (!def) return '지원하지 않는 명령입니다.';
+    const ctx = this.services.getContext();
+    if (this.services.wasm?.hasRestrictedPromptSpaces?.() && commandId.startsWith('format:align-'))
+      return '담당 구간을 나눈 문단의 정렬은 변경할 수 없습니다.';
+    if (isBlockedInFormMode(commandId, ctx)) return '양식 입력 모드에서는 이 명령을 사용할 수 없습니다.';
+    if (isUnsupportedLiveFormat(commandId, ctx.isLiveCollaboration === true)) return unsupportedLiveFormatReason;
+    if (isUnsupportedLiveStructure(commandId, ctx.isLiveCollaboration === true)) return unsupportedLiveStructureReason;
+    if (def.canExecute && !def.canExecute(ctx)) return '이 명령을 사용할 수 있는 문서 영역을 먼저 선택하세요.';
+    if (ctx.isLiveCollaboration && (commandId.startsWith('format:') || commandId.startsWith('insert:')
+      || commandId.startsWith('table:') && commandId !== 'table:transpose-copy')
+      && this.services.getInputHandler?.()?.canEditLiveSelection?.() === false)
+      return '선택한 영역을 편집할 수 없습니다. 담당 범위와 다른 참여자의 작성 상태를 확인하세요.';
+    return undefined;
   }
 }

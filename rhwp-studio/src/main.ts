@@ -73,6 +73,14 @@ import { BodyStructureNativeError } from '@/embed/collaboration-body-structure';
 
 const wasm = new WasmBridge();
 const eventBus = new EventBus();
+let lastBlockedNotice = { message: '', at: 0 };
+eventBus.on('command-blocked', value => {
+  if (typeof value !== 'string') return;
+  if (value === lastBlockedNotice.message && Date.now() - lastBlockedNotice.at < 1500) return;
+  lastBlockedNotice = { message: value, at: Date.now() };
+  if (window.parent === window) showToast({ message: value, durationMs: 4000 });
+  else document.dispatchEvent(new CustomEvent('rhwp-command-blocked', { detail: { message: value } }));
+});
 const documentState = new DocumentDirtyState(eventBus);
 const selectionBridge = new SelectionBridge();
 eventBus.on('document-mutated', () => selectionBridge.noteDocumentMutation());

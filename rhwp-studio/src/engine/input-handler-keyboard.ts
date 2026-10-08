@@ -432,6 +432,23 @@ const chordMapG: Record<string, string> = {
  */
 export function onKeyDown(this: any, e: KeyboardEvent): void {
   if (!this.active) return;
+  // 코드 단축키의 수정자 keydown은 두 번째 문자로 소비하지 않는다. 오래된 접두사는 일반 입력을 보호한다.
+  if (this._equationChordUntil) {
+    if (Date.now() > this._equationChordUntil || e.key === 'Escape') {
+      this._equationChordUntil = 0;
+      this._pendingChordM = false;
+    } else if (['Control', 'Meta', 'Shift', 'Alt'].includes(e.key)) {
+      return;
+    } else {
+      this._equationChordUntil = 0;
+      this._pendingChordM = false;
+      const letter = /^Key[A-Z]$/.test(e.code ?? '') ? e.code.slice(3).toLowerCase() : e.key.toLowerCase();
+      const command = chordMapM[letter];
+      if (command && this.dispatcher) {
+        e.preventDefault(); this.dispatcher.dispatch(command); return;
+      }
+    }
+  }
   if (this.wasm?.hasPromptSpaces?.()) {
     const selected = this.cursor.getSelectionOrdered();
     const pos = this.cursor.getPosition();
@@ -536,13 +553,33 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     return;
   }
 
+  // 셀 선택에서는 IME가 문자 조합을 시작하기 전에 M/S를 명령으로 소비한다.
+  if (this.cursor.isInCellSelectionMode() && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    const letter = /^Key[A-Z]$/.test(e.code ?? '') ? e.code.slice(3).toLowerCase() : e.key.toLowerCase();
+    if (letter === 'm' || letter === 'ㅡ' || letter === 's' || letter === 'ㄴ') {
+      e.preventDefault(); this.dispatcher?.dispatch(letter === 'm' || letter === 'ㅡ' ? 'table:cell-merge' : 'table:cell-split'); return;
+    }
+  }
+
   // IME 조합 중 처리 (한국어 IME에서 e.key는 항상 'Process'이므로 e.code로 판별)
   if (e.isComposing || e.keyCode === 229) {
+    // Safari의 한글 입력기는 조합 중이 아닌 Ctrl/Option 키에도 229를 준다.
+    // 실제 조합은 보호하고, 편집기의 조합 상태가 꺼진 경우에만 서식 명령을 전달한다.
+    if (this.isComposing === false && (e.ctrlKey || e.metaKey || e.altKey)
+      && !this.cursor.isInHeaderFooter() && !this.cursor.isInFootnote()
+      && !this.cursor.isInPictureObjectSelection() && !this.cursor.isInTableObjectSelection()) {
+      const command = matchShortcut(e, defaultShortcuts);
+      if (command?.startsWith('format:') && this.dispatcher) {
+        e.preventDefault(); this.dispatcher.dispatch(command); return;
+      }
+    }
     // [PR #786 후속] Ctrl+M chord 1번째/2번째 키 영역 영역 IME 합성 중 영역 영역도 활성화.
     // 한글 IME 영역 영역 e.key === 'Process' 영역 영역, e.code (KeyM/KeyN/KeyS/KeyF/KeyK 등) 영역 영역 판별.
-    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.code === 'KeyM') {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey
+      && (e.code === 'KeyM' || (e.code === 'KeyN' && e.ctrlKey && !e.metaKey))) {
       e.preventDefault();
       this._pendingChordM = true;
+      this._equationChordUntil = Date.now() + 1500;
       return;
     }
     // chord 2번째 키 — _pendingChordM 활성화 시 e.code 영역 영역 chordMapM lookup
@@ -756,12 +793,14 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
   // ─── F5 블록 선택 모드 진입/해제 ────────────────────────────────
   if (e.key === 'F5') {
     e.preventDefault();
+    if (e.repeat) return;
     if (this.cursor.isInCell() && !this.cursor.isInTextBox()) {
       if (this.cursor.isInCellSelectionMode()) {
-        this.cursor.advanceCellSelectionPhase();
+        if (!e.shiftKey || this.cursor.getCellSelectionPhase() === 1) this.cursor.advanceCellSelectionPhase();
         this.updateCellSelection();
       } else {
         if (this.cursor.enterCellSelectionMode()) {
+          if (e.shiftKey) this.cursor.advanceCellSelectionPhase();
           this.caret.hide();
           this.selectionRenderer.clear();
           this.updateCellSelection();
@@ -1061,9 +1100,10 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
 
   // ─── 셀 선택 모드 중 키 처리 ────────────────────────────
   if (this.cursor.isInCellSelectionMode()) {
-    if (e.key === 'Escape') {
+    if (e.key === 'Escape' || e.key === 'Enter') {
       e.preventDefault();
       // F5 셀 선택 모드 → 마지막 선택 셀의 편집 상태
+      this.cursor.moveCellSelection(0, 0);
       this.cursor.exitCellSelectionMode();
       this.cellSelectionRenderer?.clear();
       this.updateCaret();
@@ -1118,23 +1158,19 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       this.updateCellSelection();
       return;
     }
-    // M: 셀 합치기, S: 셀 나누기
-    if (e.key === 'm' || e.key === 'M') {
-      e.preventDefault();
-      this.dispatcher?.dispatch('table:cell-merge');
-      return;
-    }
-    if (e.key === 's' || e.key === 'S') {
-      e.preventDefault();
-      this.dispatcher?.dispatch('table:cell-split');
-      return;
-    }
     if (e.altKey && !e.ctrlKey && !e.metaKey) {
       const cmdId = matchShortcut(e, defaultShortcuts);
       if (cmdId === 'edit:format-copy') {
         e.preventDefault();
         this.dispatcher?.dispatch(cmdId);
         return;
+      }
+    }
+    // 서식 단축키는 F5 블록을 유지한 채 실행해 선택된 모든 셀에 적용한다.
+    if (e.ctrlKey || e.metaKey || e.altKey) {
+      const command = matchShortcut(e, defaultShortcuts);
+      if (command?.startsWith('format:')) {
+        e.preventDefault(); this.dispatcher?.dispatch(command); return;
       }
     }
     if (this.cursor.isProtectedCellSelectionMode()) {
@@ -1453,9 +1489,12 @@ export function handleCtrlKey(this: any, e: KeyboardEvent): void {
   }
   // [PR #786 후속] Ctrl+N 영역 영역 Chrome reserved shortcut (새 창) 영역 영역 JS 차단 불가
   // 영역 영역 Ctrl+M 영역 영역 chord 1번째 키 영역 영역 변경.
-  if ((e.key === 'm' || e.key === 'M' || e.key === 'ㅡ') && !e.shiftKey && !e.altKey) {
+  if ((e.code === 'KeyM' || e.key === 'm' || e.key === 'M' || e.key === 'ㅡ'
+    || (e.ctrlKey && !e.metaKey && (e.code === 'KeyN' || e.key === 'n' || e.key === 'N' || e.key === 'ㅜ')))
+    && !e.shiftKey && !e.altKey) {
     e.preventDefault();
     this._pendingChordM = true;
+    this._equationChordUntil = Date.now() + 1500;
     return;
   }
   if ((e.key === 'g' || e.key === 'G' || e.key === 'ㅎ') && !e.shiftKey && !e.altKey) {

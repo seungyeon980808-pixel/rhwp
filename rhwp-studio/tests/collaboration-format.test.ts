@@ -13,6 +13,23 @@ test('format capture emits only the changed property and preserves styled run bo
   assert.deepEqual(formatOperations(before, after), [{ type: 'format', version: 1, scope: 'character', offset: 0, count: 2, marks: { bold: true } }]);
 });
 
+test('확장 서식은 변경한 속성만 캡처하고 네이티브 셀 서식으로 전달한다', () => {
+  const before: CollaborationManifestRegionV1 = { id: 'c:0:0:0:0', kind: 'cell', text: '문서', paragraph: {},
+    runs: [{ start: 0, end: 2, properties: { underline: false, fontSize: 1000, ratios: Array(7).fill(100), spacings: Array(7).fill(0) } }] };
+  const marks = { underline: true, fontSize: 1200, ratios: Array(7).fill(99), spacings: Array(7).fill(-1) };
+  const after = { ...before, runs: [{ start: 0, end: 2, properties: marks }] };
+  const operations = formatOperations(before, after);
+  assert.deepEqual(operations, [{ type: 'format', version: 1, scope: 'character', offset: 0, count: 2, marks }]);
+  const operation = parseFormatOperation(operations[0]); assert.ok(operation);
+  const calls: unknown[] = [];
+  const wasm = { applyCharFormatInCell: (...args: unknown[]) => { calls.push(args); return '{}'; } } as CollaborationFormatWasm;
+  const ranges = planFormatting(after.text, operation); assert.ok(ranges);
+  applyFormatting(wasm, { address: { kind: 'cell', section: 0, paragraph: 0, control: 0, cell: 0, cellParagraph: 0 }, operation, ranges });
+  assert.deepEqual(JSON.parse((calls[0] as string[]).at(-1)!), marks);
+  for (const invalid of [{ fontSize: 0 }, { fontSize: Infinity }, { ratios: [100] }, { spacings: Array(7).fill(-129) }, { underline: 'yes' }])
+    assert.equal(parseFormatOperation({ ...operations[0], marks: invalid }), null);
+});
+
 test('native formatting maps UTF-16 ranges into scalar offsets in multiple cell paragraphs', () => {
   const operation = { type: 'format', version: 1, scope: 'character', offset: 1, count: 5, marks: { textColor: '#ff0000' } } as const;
   const ranges = planFormatting('a😀\nbc', operation);
@@ -38,11 +55,11 @@ test('native parser rejects style keys and payloads outside the supported format
 });
 
 test('unsupported formatting commands are blocked only in live collaboration', () => {
-  for (const command of ['format:underline', 'format:char-shape', 'format:apply-style', 'edit:format-paste', 'table:border-each']) {
+  for (const command of ['format:char-shape', 'format:apply-style', 'edit:format-paste', 'table:border-each']) {
     assert.equal(isUnsupportedLiveFormat(command, true), true);
     assert.equal(isUnsupportedLiveFormat(command, false), false);
   }
-  for (const command of ['format:bold', 'format:italic', 'format:align-center'])
+  for (const command of ['format:bold', 'format:italic', 'format:underline', 'format:char-spacing-increase', 'format:char-ratio-decrease', 'format:font-size-increase', 'format:align-center'])
     assert.equal(isUnsupportedLiveFormat(command, true), false);
 });
 
@@ -66,7 +83,8 @@ test('adjacent identical character changes compact without including an unchange
     { start: 4, end: 6, properties: { bold: true } },
   ] };
   assert.deepEqual(formatOperations(before, after), [
-    { type: 'format', version: 1, scope: 'character', offset: 0, count: 2, marks: { bold: true } },
+    { type: 'format', version: 1, scope: 'character', offset: 0, count: 1, marks: { bold: true, fontSize: 1000 } },
+    { type: 'format', version: 1, scope: 'character', offset: 1, count: 1, marks: { bold: true, fontSize: 1200 } },
     { type: 'format', version: 1, scope: 'character', offset: 4, count: 2, marks: { bold: true } },
   ]);
 });

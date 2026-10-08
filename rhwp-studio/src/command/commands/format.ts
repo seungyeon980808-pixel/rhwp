@@ -200,7 +200,7 @@ export const formatCommands: CommandDef[] = [
   {
     id: 'format:align-center',
     label: '가운데 정렬',
-    shortcutLabel: 'Alt+Shift+C',
+    shortcutLabel: 'Ctrl+Shift+C / Alt+Shift+C',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
       services.getInputHandler()?.applyParaAlign('center');
@@ -209,7 +209,7 @@ export const formatCommands: CommandDef[] = [
   {
     id: 'format:align-right',
     label: '오른쪽 정렬',
-    shortcutLabel: 'Alt+Shift+H',
+    shortcutLabel: 'Ctrl+Shift+R / Alt+Shift+H',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
       services.getInputHandler()?.applyParaAlign('right');

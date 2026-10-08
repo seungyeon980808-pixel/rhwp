@@ -18,6 +18,18 @@ function command(input: Partial<KeyboardEvent>, platform: 'mac' | 'other' = 'oth
   return matchShortcut(key(input), defaultShortcuts, platform);
 }
 
+test('한글 입력 상태의 수정자 단축키는 물리 키로 매핑하고 일반 입력은 소비하지 않는다', () => {
+  for (const [letter, korean, expected] of [['B', 'ㅠ', 'format:bold'], ['I', 'ㅑ', 'format:italic'], ['U', 'ㅕ', 'format:underline']] as const) {
+    assert.equal(command({ key: korean, code: `Key${letter}`, ctrlKey: true }, 'mac'), expected);
+    assert.equal(command({ key: korean, code: `Key${letter}`, metaKey: true }, 'mac'), expected);
+    assert.equal(command({ key: korean, code: `Key${letter}` }), null);
+  }
+  for (const [letter, expected] of [['L', 'left'], ['C', 'center'], ['R', 'right'], ['M', 'justify']] as const)
+    assert.equal(command({ key: 'Process', code: `Key${letter}`, ctrlKey: true, shiftKey: true }), `format:align-${expected}`);
+  assert.equal(command({ key: '´', code: 'KeyE', altKey: true, shiftKey: true }, 'mac'), 'format:font-size-increase');
+  assert.equal(command({ key: '‰', code: 'KeyR', altKey: true, shiftKey: true }, 'mac'), 'format:font-size-decrease');
+});
+
 test('한컴 호환 장평 단축키를 영문 키로 매핑한다', () => {
   assert.equal(command({ key: 'j', code: 'KeyJ', altKey: true, shiftKey: true }), 'format:char-ratio-decrease');
   assert.equal(command({ key: 'k', code: 'KeyK', altKey: true, shiftKey: true }), 'format:char-ratio-increase');

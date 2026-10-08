@@ -1,5 +1,5 @@
 import type { CellBbox } from '@/core/types';
-import { VirtualScroll } from '@/view/virtual-scroll';
+import type { VirtualScroll } from '@/view/virtual-scroll';
 
 /** F5 셀 블록 선택 영역을 하이라이트 오버레이로 렌더링한다 */
 export class CellSelectionRenderer {
@@ -25,6 +25,7 @@ export class CellSelectionRenderer {
     range: { startRow: number; startCol: number; endRow: number; endCol: number },
     zoom: number,
     excluded?: Set<string>,
+    selection?: { phase: number; focus: { row: number; col: number } | null; pageIndex?: number },
   ): void {
     this.clear();
     this.ensureAttached();
@@ -32,6 +33,7 @@ export class CellSelectionRenderer {
     const scrollContent = this.container.querySelector('#scroll-content');
     const contentWidth = scrollContent?.clientWidth ?? 0;
 
+    let markerCell: CellBbox | undefined;
     for (const cell of cellBboxes) {
       // 셀이 선택 범위에 포함되는지 확인 (병합 셀 고려)
       const cellEndRow = cell.row + cell.rowSpan - 1;
@@ -58,6 +60,29 @@ export class CellSelectionRenderer {
         `height:${cell.h * zoom}px;`;
       this.layer.appendChild(div);
       this.highlights.push(div);
+      const focus = selection?.focus;
+      if (focus && cell.row <= focus.row && cellEndRow >= focus.row
+        && cell.col <= focus.col && cellEndCol >= focus.col) {
+        // 페이지에 걸친 셀은 입력 커서가 있는 페이지의 조각을 우선한다.
+        const preferred = cell.pageIndex === selection?.pageIndex;
+        const previousPreferred = markerCell?.pageIndex === selection?.pageIndex;
+        if (!markerCell || preferred && !previousPreferred
+          || preferred === previousPreferred && (cell.pageIndex > markerCell.pageIndex
+            || cell.pageIndex === markerCell.pageIndex && cell.y + cell.h > markerCell.y + markerCell.h)) {
+          markerCell = cell;
+        }
+      }
+    }
+    if (markerCell && selection) {
+      const marker = document.createElement('div');
+      const pageLeft = (contentWidth - this.virtualScroll.getPageWidth(markerCell.pageIndex)) / 2;
+      marker.className = 'cell-selection-marker';
+      marker.dataset.phase = String(selection.phase);
+      marker.setAttribute('aria-label', selection.phase === 1 ? '셀 선택' : '셀 범위 선택');
+      marker.style.cssText = `position:absolute;left:${pageLeft + (markerCell.x + markerCell.w / 2) * zoom}px;` +
+        `top:${this.virtualScroll.getPageOffset(markerCell.pageIndex) + (markerCell.y + markerCell.h / 2) * zoom}px;`;
+      this.layer.appendChild(marker);
+      this.highlights.push(marker);
     }
   }
 

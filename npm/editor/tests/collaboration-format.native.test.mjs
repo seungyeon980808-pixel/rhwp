@@ -49,3 +49,22 @@ for (const format of ['hwp', 'hwpx']) test(`native formatting is scoped, capture
     assert.equal(reopened.getTextInCell(...address, 0, 0, reopened.getCellParagraphLength(...address, 0)), before.text);
   } finally { a.doc.free(); b.doc.free(); reopened?.free(); }
 });
+
+for (const format of ['hwp', 'hwpx']) test(`extended character formats reach the other replica and survive ${format} reopening`, async () => {
+  const a = harness(), b = harness(); let reopened;
+  try {
+    await a.live.begin(); await b.live.begin();
+    const before = (await a.live.manifest()).regions.find(region => region.id === regionId); assert.ok(before);
+    const marks = { underline: true, fontSize: 1300, ratios: Array(7).fill(99), spacings: Array(7).fill(-1) };
+    a.doc.applyCharFormatInCell(...address, 0, 0, 3, JSON.stringify(marks));
+    await a.live.captureLocal();
+    const mutation = a.live.drain(0).find(entry => entry.regionId === regionId); assert.ok(mutation?.ops?.length);
+    assert.equal((await b.live.apply({ regionId, expectedText: before.text, origin: 'remote:extended', ops: mutation.ops })).ok, true);
+    reopened = new HwpDocument(format === 'hwp' ? b.doc.exportHwp() : b.doc.exportHwpx());
+    for (const doc of [b.doc, reopened]) {
+      const actual = JSON.parse(doc.getCellCharPropertiesAt(...address, 0, 0));
+      for (const [key, value] of Object.entries(marks)) assert.deepEqual(actual[key], value, `${format}: ${key}`);
+      assert.deepEqual(JSON.parse(doc.getCellCharPropertiesAt(...address, 0, 4)), before.runs.find(run => run.start <= 4 && run.end > 4).properties);
+    }
+  } finally { a.doc.free(); b.doc.free(); reopened?.free(); }
+});

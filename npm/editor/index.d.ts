@@ -154,7 +154,8 @@ export type CollaborationOpV1 =
 export type CollaborationFormatOpV1 = Readonly<{
   type: 'format'; version: 1; offset: number; count: number;
 }> & (
-  | Readonly<{ scope: 'character'; marks: Readonly<{ bold?: boolean; italic?: boolean; textColor?: string }> }>
+  | Readonly<{ scope: 'character'; marks: Readonly<{ bold?: boolean; italic?: boolean; underline?: boolean;
+    textColor?: string; fontSize?: number; ratios?: number[]; spacings?: number[] }> }>
   | Readonly<{ scope: 'paragraph'; marks: Readonly<{ alignment: string }> }>
 );
 

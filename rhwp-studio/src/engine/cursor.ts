@@ -1259,6 +1259,10 @@ export class CursorState {
   /** 셀 선택 단계를 반환한다. */
   getCellSelectionPhase(): number { return this._cellSelectionPhase; }
 
+  getCellSelectionFocus(): { row: number; col: number } | null {
+    return this.cellFocus ? { ...this.cellFocus } : null;
+  }
+
   /** F5 반복: 셀 선택 단계를 다음으로 진행한다. */
   advanceCellSelectionPhase(): void {
     if (!this._cellSelectionMode || !this.cellTableCtx) return;

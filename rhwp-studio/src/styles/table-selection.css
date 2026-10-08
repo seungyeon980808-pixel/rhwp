@@ -6,6 +6,23 @@
   pointer-events: none;
 }
 
+.cell-selection-marker {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #777;
+  border: 1px solid #fff;
+  box-shadow: 0 0 0 1px #777;
+  box-sizing: border-box;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.cell-selection-marker[data-phase="2"],
+.cell-selection-marker[data-phase="3"] {
+  background: #d93025;
+  box-shadow: 0 0 0 1px #d93025;
+}
+
 .protected-cell-hover-guard {
   position: fixed;
   z-index: 10000;

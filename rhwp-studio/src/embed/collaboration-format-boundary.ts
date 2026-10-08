@@ -1,6 +1,8 @@
-const supportedCommands = new Set(['format:bold', 'format:italic', 'format:align-left',
+const supportedCommands = new Set(['format:bold', 'format:italic', 'format:underline',
+  'format:font-size-increase', 'format:font-size-decrease', 'format:char-spacing-increase', 'format:char-spacing-decrease',
+  'format:char-ratio-increase', 'format:char-ratio-decrease', 'format:align-left',
   'format:align-center', 'format:align-right', 'format:align-justify', 'format:align-distribute', 'format:align-split']);
-export const unsupportedLiveFormatReason = '공동편집에서 아직 동기화되지 않는 서식입니다. 굵게, 기울임, 글자 색, 문단 정렬만 사용할 수 있습니다.';
+export const unsupportedLiveFormatReason = '이 서식은 아직 공동 작성에 지원되지 않습니다. 굵게·기울임·밑줄·글자 색·크기·자간·장평·문단 정렬을 사용할 수 있습니다.';
 const unsupportedCommands = new Set(['edit:format-paste', 'table:cell-props', 'table:border-each', 'table:border-one']);
 
 export function isUnsupportedLiveFormat(command: string, live: boolean): boolean {
@@ -8,8 +10,8 @@ export function isUnsupportedLiveFormat(command: string, live: boolean): boolean
 }
 
 export function installLiveFormatBoundary(document: Document): void {
-  const selectors = ['#style-name', '#font-name', '#font-size', '#font-lang', '#btn-underline', '#btn-strike',
-    '#btn-highlight', '#btn-size-up', '#btn-size-down', '#btn-charfx', '#linespacing-select', '#btn-ls-up', '#btn-ls-down'];
+  const selectors = ['#style-name', '#font-name', '#font-lang', '#btn-strike',
+    '#btn-highlight', '#btn-charfx', '#linespacing-select', '#btn-ls-up', '#btn-ls-down'];
   const selector = selectors.join(',');
   const controls = [...document.querySelectorAll(selector), ...[...document.querySelectorAll('[data-cmd]')]
     .filter((element) => isUnsupportedLiveFormat(element.getAttribute('data-cmd') ?? '', true))];

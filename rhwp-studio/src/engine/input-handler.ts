@@ -498,6 +498,8 @@ export class InputHandler {
 
   // IME 조합 상태
   private isComposing = false;
+  private _pendingChordM = false;
+  private _equationChordUntil = 0;
   private compositionAnchor: DocumentPosition | null = null;
   private compositionLength = 0; // 문서에 삽입된 조합 텍스트 길이
   private _lastCompositionText = '';
@@ -595,6 +597,8 @@ export class InputHandler {
     this.onCompositionEndBound = this.onCompositionEnd.bind(this);
     this.onInputBlurBound = () => {
       this.flushDeferredPaginationIfNeeded('input-blur', false);
+      this._pendingChordM = false;
+      this._equationChordUntil = 0;
     };
     this.onCopyBound = this.onCopy.bind(this);
     this.onCutBound = this.onCut.bind(this);
@@ -3292,7 +3296,11 @@ export class InputHandler {
       }
       const zoom = this.viewportManager.getZoom();
       const excluded = this.cursor.getExcludedCells();
-      this.cellSelectionRenderer.render(bboxes, range, zoom, excluded.size > 0 ? excluded : undefined);
+      this.cellSelectionRenderer.render(bboxes, range, zoom, excluded.size > 0 ? excluded : undefined,
+        this.cursor.isProtectedCellSelectionMode() ? undefined : {
+          phase: this.cursor.getCellSelectionPhase(), focus: this.cursor.getCellSelectionFocus(),
+          pageIndex: this.cursor.getRect()?.pageIndex,
+        });
     } catch (e) {
       console.warn('[InputHandler] updateCellSelection 실패:', e);
       this.cellSelectionRenderer.clear();
@@ -3626,6 +3634,8 @@ export class InputHandler {
     this.deferredPaginationPending = false;
     this.resetRawTextMutationEffects();
     this.isComposing = false;
+    this._pendingChordM = false;
+    this._equationChordUntil = 0;
     this.compositionAnchor = null;
     this.compositionLength = 0;
     // [#4162] 문서 전환·닫기에서 안 지우면, 이전 문서에서 예약한 서식이 새 문서의
@@ -3655,6 +3665,8 @@ export class InputHandler {
   }
 
   dispose(): void {
+    this._pendingChordM = false;
+    this._equationChordUntil = 0;
     this.flushDeferredPaginationIfNeeded('before-dispose', false);
     if (this.isResizeDragging) {
       this.cleanupResizeDrag();
@@ -4952,7 +4964,7 @@ export class InputHandler {
   adjustFontSize(delta: number): void {
     // [#4162] 선택이 없어도(캐럿만) applyCharFormat 이 캐럿 대기 서식으로 예약한다.
     const current = this.getCharPropertiesAtCursor();
-    const newSize = Math.max(100, (current.fontSize ?? 1000) + delta); // 최소 1pt
+    const newSize = Math.max(100, Math.min(100_000, (current.fontSize ?? 1000) + delta));
     this.applyCharFormat({ fontSize: newSize });
   }
 

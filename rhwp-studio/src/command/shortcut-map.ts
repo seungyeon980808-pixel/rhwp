@@ -113,8 +113,9 @@ export const defaultShortcuts: [ShortcutDef, string][] = [
   [{ key: 'l', ctrl: true, shift: true }, 'format:align-left'],
   // Ctrl+Shift+M: 양쪽 정렬 (브라우저 충돌 없음)
   [{ key: 'm', ctrl: true, shift: true }, 'format:align-justify'],
-  // Ctrl+Shift+R: 브라우저 강제새로고침 충돌 → Alt+Shift+H로 재매핑 (Alt+Shift+R은 글꼴크기축소)
-  // Ctrl+Shift+C: 브라우저 요소검사 충돌 → Alt+Shift+C로 재매핑
+  [{ key: 'r', ctrl: true, shift: true }, 'format:align-right'],
+  [{ key: 'c', ctrl: true, shift: true }, 'format:align-center'],
+  // 브라우저가 Ctrl/Cmd+Shift+R/C를 선점하는 환경에서도 기존 Alt 대체 조합을 유지한다.
   // Ctrl+Shift+T: 브라우저 탭복원 충돌 → Alt+Shift+T로 재매핑
   [{ key: 'h', alt: true, shift: true }, 'format:align-right'],   // 오른쪽 정렬 (재매핑, H=rigHt)
   [{ key: 'ㅗ', alt: true, shift: true }, 'format:align-right'],
@@ -151,7 +152,9 @@ export function matchShortcut(
     if ((def.shift ?? false) !== e.shiftKey) continue;
     if ((def.alt ?? false) !== e.altKey) continue;
     if (eventKey === def.key) return cmdId;
-    if (def.code && eventCode === def.code.toLowerCase()) return cmdId;
+    // 수정자 단축키는 한글 IME·macOS Option의 문자 변환과 무관하게 같은 물리 키로 동작한다.
+    const code = def.code ?? ((def.ctrl || def.alt) && /^[a-z]$/.test(def.key) ? `Key${def.key.toUpperCase()}` : undefined);
+    if (code && eventCode === code.toLowerCase()) return cmdId;
   }
   return null;
 }

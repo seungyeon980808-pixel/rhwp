@@ -179,8 +179,8 @@ test('상단 메뉴 하드코딩 단축키와 registry shortcutLabel의 누락 �
   assertCommandShortcut(format, 'format:font-size-increase', 'Alt+Shift+E');
   assertCommandShortcut(format, 'format:font-size-decrease', 'Alt+Shift+R');
   assertCommandShortcut(format, 'format:align-left', 'Ctrl+Shift+L');
-  assertCommandShortcut(format, 'format:align-center', 'Alt+Shift+C');
-  assertCommandShortcut(format, 'format:align-right', 'Alt+Shift+H');
+  assertCommandShortcut(format, 'format:align-center', 'Ctrl+Shift+C / Alt+Shift+C');
+  assertCommandShortcut(format, 'format:align-right', 'Ctrl+Shift+R / Alt+Shift+H');
   assertCommandShortcut(format, 'format:align-justify', 'Ctrl+Shift+M');
   assertCommandShortcut(format, 'format:align-distribute', 'Alt+Shift+D');
   assertCommandShortcut(format, 'format:line-spacing-increase', 'Alt+Shift+Z');
