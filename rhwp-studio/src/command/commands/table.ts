@@ -1,4 +1,5 @@
 import type { CommandDef, CommandServices, EditorContext } from '../types';
+import type { DocumentPosition, CellPathLike } from '../../core/types';
 import { UnsupportedLiveStructureError } from '../../embed/collaboration-structure-boundary';
 import { TableCellPropsDialog } from '@/ui/table-cell-props-dialog';
 import { TableCreateDialog } from '@/ui/table-create-dialog';
@@ -24,6 +25,21 @@ type TableCellCommandContext = {
   pos: ReturnType<NonNullable<ReturnType<CommandServices['getInputHandler']>>['getCursorPosition']>;
   cellInfo: ReturnType<CommandServices['wasm']['getCellInfo']>;
 };
+
+function cellInfoAt(wasm: CommandServices['wasm'], pos: DocumentPosition) {
+  return pos.cellPath && pos.cellPath.length > 1
+    ? wasm.getCellInfoByPath(pos.sectionIndex, pos.parentParaIndex!, JSON.stringify(pos.cellPath))
+    : wasm.getCellInfo(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, pos.cellIndex!);
+}
+function mutateTableAt<T>(wasm: CommandServices['wasm'], pos: DocumentPosition, options: Record<string, unknown>, flat: () => T): T {
+  if (!pos.cellPath || pos.cellPath.length < 2) return flat();
+  const result = wasm.editNestedTable(pos.sectionIndex, pos.parentParaIndex!, pos.cellPath, options);
+  const dimensions = wasm.getTableDimensionsByPath(pos.sectionIndex, pos.parentParaIndex!, JSON.stringify(pos.cellPath));
+  return { ...result, ...dimensions } as T;
+}
+function tablePosition(ctx: { sec: number; ppi: number; ci: number; cellPath?: CellPathLike }): DocumentPosition {
+  return { sectionIndex: ctx.sec, paragraphIndex: 0, charOffset: 0, parentParaIndex: ctx.ppi, controlIndex: ctx.ci, cellPath: ctx.cellPath as DocumentPosition['cellPath'] };
+}
 
 function safeTableOp(fn: () => void, label: string): void {
   try { fn(); } catch (e) {
@@ -79,7 +95,7 @@ function blockCalcCommand(id: string, label: string, func: string, shortcut: str
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
       try {
-        const cellInfo = services.wasm.getCellInfo(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex, pos.cellIndex);
+        const cellInfo = cellInfoAt(services.wasm, pos);
         const row = cellInfo.row;
         const col = cellInfo.col;
         const formula = `=${func}(above)`;
@@ -124,12 +140,7 @@ function currentTableCellContext(services: CommandServices): TableCellCommandCon
   if (!ih) return null;
   const pos = ih.getCursorPosition();
   if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return null;
-  const cellInfo = services.wasm.getCellInfo(
-    pos.sectionIndex,
-    pos.parentParaIndex,
-    pos.controlIndex,
-    pos.cellIndex,
-  );
+  const cellInfo = cellInfoAt(services.wasm, pos);
   return { ih, pos, cellInfo };
 }
 
@@ -153,16 +164,16 @@ function applyTableInsertRowColumn(
       for (let i = 0; i < count; i += 1) {
         switch (mode) {
           case 'row-above':
-            wasm.insertTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row, false);
+            mutateTableAt(wasm, pos, { operation: "insert-row", row: cellInfo.row, below: false }, () => wasm.insertTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row, false));
             break;
           case 'row-below':
-            wasm.insertTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row, true);
+            mutateTableAt(wasm, pos, { operation: "insert-row", row: cellInfo.row, below: true }, () => wasm.insertTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row, true));
             break;
           case 'col-left':
-            wasm.insertTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col, false);
+            mutateTableAt(wasm, pos, { operation: "insert-column", col: cellInfo.col, right: false }, () => wasm.insertTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col, false));
             break;
           case 'col-right':
-            wasm.insertTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col, true);
+            mutateTableAt(wasm, pos, { operation: "insert-column", col: cellInfo.col, right: true }, () => wasm.insertTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col, true));
             break;
         }
       }
@@ -214,8 +225,8 @@ function applyTableDeleteRowColumn(
     operationType: mode === 'row' ? 'deleteTableRow' : 'deleteTableColumn',
     operation: (wasm) => {
       const res = mode === 'row'
-        ? wasm.deleteTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row)
-        : wasm.deleteTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col);
+        ? mutateTableAt(wasm, pos, { operation: "delete-row", row: cellInfo.row }, () => wasm.deleteTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row))
+        : mutateTableAt(wasm, pos, { operation: "delete-column", col: cellInfo.col }, () => wasm.deleteTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col));
       if (!res.ok) return pos;
       // 삭제 후 셀 수가 줄면 기존 cellIndex가 범위를 벗어날 수 있어 보정한다 (#1483).
       const corrected = clampedCellAfterDelete(
@@ -385,12 +396,12 @@ export const tableCommands: CommandDef[] = [
       if (!ih) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
-      const cellInfo = services.wasm.getCellInfo(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex, pos.cellIndex);
+      const cellInfo = cellInfoAt(services.wasm, pos);
       safeTableOp(() => ih.executeOperation({
         kind: 'snapshot',
         operationType: 'insertTableRow',
         operation: (wasm) => {
-          wasm.insertTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row, false);
+          mutateTableAt(wasm, pos, { operation: "insert-row", row: cellInfo.row, below: false }, () => wasm.insertTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row, false));
           return pos;
         },
       }), '줄 추가');
@@ -405,12 +416,12 @@ export const tableCommands: CommandDef[] = [
       if (!ih) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
-      const cellInfo = services.wasm.getCellInfo(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex, pos.cellIndex);
+      const cellInfo = cellInfoAt(services.wasm, pos);
       safeTableOp(() => ih.executeOperation({
         kind: 'snapshot',
         operationType: 'insertTableRow',
         operation: (wasm) => {
-          wasm.insertTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row, true);
+          mutateTableAt(wasm, pos, { operation: "insert-row", row: cellInfo.row, below: true }, () => wasm.insertTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row, true));
           return pos;
         },
       }), '줄 추가');
@@ -425,12 +436,12 @@ export const tableCommands: CommandDef[] = [
       if (!ih) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
-      const cellInfo = services.wasm.getCellInfo(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex, pos.cellIndex);
+      const cellInfo = cellInfoAt(services.wasm, pos);
       safeTableOp(() => ih.executeOperation({
         kind: 'snapshot',
         operationType: 'insertTableColumn',
         operation: (wasm) => {
-          wasm.insertTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col, false);
+          mutateTableAt(wasm, pos, { operation: "insert-column", col: cellInfo.col, right: false }, () => wasm.insertTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col, false));
           return pos;
         },
       }), '칸 추가');
@@ -445,12 +456,12 @@ export const tableCommands: CommandDef[] = [
       if (!ih) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
-      const cellInfo = services.wasm.getCellInfo(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex, pos.cellIndex);
+      const cellInfo = cellInfoAt(services.wasm, pos);
       safeTableOp(() => ih.executeOperation({
         kind: 'snapshot',
         operationType: 'insertTableColumn',
         operation: (wasm) => {
-          wasm.insertTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col, true);
+          mutateTableAt(wasm, pos, { operation: "insert-column", col: cellInfo.col, right: true }, () => wasm.insertTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col, true));
           return pos;
         },
       }), '칸 추가');
@@ -465,12 +476,12 @@ export const tableCommands: CommandDef[] = [
       if (!ih) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
-      const cellInfo = services.wasm.getCellInfo(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex, pos.cellIndex);
+      const cellInfo = cellInfoAt(services.wasm, pos);
       safeTableOp(() => ih.executeOperation({
         kind: 'snapshot',
         operationType: 'deleteTableRow',
         operation: (wasm) => {
-          wasm.deleteTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row);
+          mutateTableAt(wasm, pos, { operation: "delete-row", row: cellInfo.row }, () => wasm.deleteTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row));
           return pos;
         },
       }), '줄 지우기');
@@ -485,12 +496,12 @@ export const tableCommands: CommandDef[] = [
       if (!ih) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
-      const cellInfo = services.wasm.getCellInfo(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex, pos.cellIndex);
+      const cellInfo = cellInfoAt(services.wasm, pos);
       safeTableOp(() => ih.executeOperation({
         kind: 'snapshot',
         operationType: 'deleteTableColumn',
         operation: (wasm) => {
-          wasm.deleteTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col);
+          mutateTableAt(wasm, pos, { operation: "delete-column", col: cellInfo.col }, () => wasm.deleteTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col));
           return pos;
         },
       }), '칸 지우기');
@@ -513,7 +524,7 @@ export const tableCommands: CommandDef[] = [
       const isMultiCell = range && tableCtx &&
         (range.startRow !== range.endRow || range.startCol !== range.endCol);
 
-      const cellInfo = services.wasm.getCellInfo(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex, pos.cellIndex);
+      const cellInfo = cellInfoAt(services.wasm, pos);
       const isMerged = !isMultiCell && (cellInfo.rowSpan > 1 || cellInfo.colSpan > 1);
 
       const dialog = new CellSplitDialog(isMerged);
@@ -525,17 +536,17 @@ export const tableCommands: CommandDef[] = [
           operationType: 'splitTableCell',
           operation: (wasm) => {
             if (isMultiCell && range && tableCtx) {
-              wasm.splitTableCellsInRange(
+              mutateTableAt(wasm, tablePosition(tableCtx), { operation: 'split-range', ...range, rows: nRows, columns: mCols, equalHeight }, () => wasm.splitTableCellsInRange(
                 tableCtx.sec, tableCtx.ppi, tableCtx.ci,
                 range.startRow, range.startCol, range.endRow, range.endCol,
                 nRows, mCols, equalHeight,
-              );
+              ));
             } else {
-              wasm.splitTableCellInto(
+              mutateTableAt(wasm, pos, { operation: 'split', row: cellInfo.row, col: cellInfo.col, rows: nRows, columns: mCols, equalHeight, mergeFirst }, () => wasm.splitTableCellInto(
                 pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!,
                 cellInfo.row, cellInfo.col,
                 nRows, mCols, equalHeight, mergeFirst,
-              );
+              ));
             }
             return pos;
           },
@@ -563,7 +574,7 @@ export const tableCommands: CommandDef[] = [
         kind: 'snapshot',
         operationType: 'mergeTableCells',
         operation: (wasm) => {
-          wasm.mergeTableCells(tableCtx.sec, tableCtx.ppi, tableCtx.ci, range.startRow, range.startCol, range.endRow, range.endCol);
+          mutateTableAt(wasm, tablePosition(tableCtx), { operation: "merge", ...range }, () => wasm.mergeTableCells(tableCtx.sec, tableCtx.ppi, tableCtx.ci, range.startRow, range.startCol, range.endRow, range.endCol));
           return ih.getCursorPosition();
         },
       }), '셀 합치기');

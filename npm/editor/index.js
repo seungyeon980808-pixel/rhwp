@@ -418,6 +418,12 @@ export class RhwpEditor {
     return result;
   }
 
+  async setDocumentEditingMode(mode) {
+    this._requireLiveCollaborationCapability();
+    if (!mode || typeof mode.canRequest !== 'boolean' || typeof mode.exclusive !== 'boolean') throw new TypeError('Invalid document editing mode');
+    return this._request('setDocumentEditingMode', mode);
+  }
+
   async executeWritingCommand(command) {
     this._requireLiveCollaborationCapability();
     return this._request('executeWritingCommand', { command });

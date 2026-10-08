@@ -67,7 +67,7 @@ import { getCollaborationRegionRects } from '@/embed/collaboration-region-geomet
 import { readCollaborationPresence } from '@/embed/collaboration-presence';
 import { CollaborationLiveAdapter } from '@/embed/collaboration-live-adapter';
 import { installLiveFormatBoundary } from '@/embed/collaboration-format-boundary';
-import { installLiveStructureBoundary } from '@/embed/collaboration-structure-boundary';
+import { isUnsupportedLiveStructure, installLiveStructureBoundary } from '@/embed/collaboration-structure-boundary';
 import { CollaborationBodyHost } from '@/embed/collaboration-body-host';
 import { BodyStructureNativeError } from '@/embed/collaboration-body-structure';
 
@@ -153,6 +153,12 @@ let renderBackendFallbackReason: RenderBackendFallbackReason | null = null;
 let rendererInitializationError: string | null = null;
 let rendererInitialized = false;
 let collaborationActive = false;
+let exclusiveDocumentEdit = false;
+let exclusiveDocumentFrozen = false;
+for (const type of ['keydown', 'beforeinput', 'input', 'paste', 'compositionstart', 'mousedown', 'pointerdown']) document.addEventListener(type, event => {
+  if (exclusiveDocumentFrozen) { event.preventDefault(); event.stopImmediatePropagation(); }
+}, true);
+let canRequestDocumentEdit = false;
 let collaborationReadOnly = false;
 let extensionViewerSettings: ExtensionViewerSettings = {
   disableExternalWebFonts: false,
@@ -217,7 +223,7 @@ const collaborationBodyHost = new CollaborationBodyHost(wasm, collaborationAdapt
 let bodyStructureInputAtStage = '';
 
 function captureBodyStructure(event: KeyboardEvent | ClipboardEvent): void {
-  if (!collaborationActive || collaborationReadOnly || !collaborationBodyHost.enabled) return;
+  if (exclusiveDocumentEdit || !collaborationActive || collaborationReadOnly || !collaborationBodyHost.enabled) return;
   if (!inputHandler?.isEditorInput(event.target)) return;
   const input = inputHandler?.getBodyStructureInput();
   if (!input || inputHandler?.isCompositionActive()) return;
@@ -254,6 +260,8 @@ document.addEventListener('keydown', captureBodyStructure, true);
 document.addEventListener('paste', captureBodyStructure, true);
 
 async function beginLiveCollaborationMode(): Promise<void> {
+  exclusiveDocumentEdit = false;
+  exclusiveDocumentFrozen = false;
   wasm.restrictLiveTableStructure();
   if (!collaborationActive) {
     collaborationActive = true;
@@ -289,7 +297,9 @@ function getContext(): EditorContext {
     editMode,
     isFormMode,
     canEditFormField,
-    isLiveCollaboration: collaborationActive && !collaborationReadOnly,
+    isLiveCollaboration: collaborationActive && !collaborationReadOnly && !exclusiveDocumentEdit,
+    canRequestDocumentEdit,
+    isDocumentEditFrozen: exclusiveDocumentFrozen,
     canUndo: inputHandler?.canUndo() ?? false,
     canRedo: inputHandler?.canRedo() ?? false,
     zoom: canvasView?.getViewportManager().getZoom() ?? 1.0,
@@ -321,6 +331,9 @@ const commandServices: CommandServices = {
   getViewportManager: () => canvasView?.getViewportManager() ?? null,
   gotoPage: (globalPage) => canvasView?.gotoPage(globalPage) ?? false,
   setEditMode,
+  requestDocumentEdit: (command, params) => document.dispatchEvent(new CustomEvent('rhwp-document-edit-request', {
+    detail: { command, params, revision: documentState.revision() },
+  })),
 };
 
 const dispatcher = new CommandDispatcher(registry, commandServices, eventBus);
@@ -1706,14 +1719,36 @@ installEmbedRuntime({
       await beginLiveCollaborationMode();
       return { schemaVersion: 1, readOnly: false };
     },
+    async setDocumentEditingMode(mode) {
+      await initPromise;
+      if (!collaborationActive || collaborationReadOnly) throw new Error('Editable collaboration is required');
+      if (mode.expectedRevision !== undefined && mode.expectedRevision !== documentState.revision()) throw new Error('Document changed while preparing table editing');
+      canRequestDocumentEdit = mode.canRequest;
+      exclusiveDocumentEdit = mode.exclusive;
+      exclusiveDocumentFrozen = mode.frozen === true;
+      if (!mode.exclusive && !mode.frozen) dispatcher.cancelPendingDocumentOperation();
+      wasm.restrictLiveTableStructure(!mode.exclusive);
+      // No text/structure operation is emitted during a full-document transaction.
+      if (mode.exclusive) wasm.setLivePastePolicy({ epoch: wasm.getLivePasteEpoch() ?? 'exclusive-document', writableRegionIds: [], promptPolicy: { memberId: null, spaces: [], texts: [] } });
+      for (const element of document.querySelectorAll('[data-cmd]')) {
+        if (!(element.getAttribute('data-cmd') ?? '').startsWith('table:')) continue;
+        element.removeAttribute('aria-disabled'); element.removeAttribute('aria-description'); element.removeAttribute('title');
+        if (element instanceof HTMLButtonElement) element.disabled = false;
+      }
+      document.querySelector('[data-live-structure-reason]')?.remove();
+      eventBus.emit('command-state-changed');
+    },
     async setLivePastePolicy(policy) {
       await initPromise;
       wasm.setLivePastePolicy(policy);
     },
     async executeWritingCommand(command) {
       await initPromise;
+      if (command.startsWith('table:') && !exclusiveDocumentEdit) return false;
       if (!collaborationActive || !inputHandler?.canEditLiveSelection()
         || wasm.hasRestrictedPromptSpaces() && command.startsWith('format:align-')) return false;
+      if (command === 'table:pending-resize') return dispatcher.resumePendingDocumentOperation();
+      if (command.startsWith('table:') && exclusiveDocumentEdit) return dispatcher.resumePendingDocumentCommand(command) || dispatcher.dispatch(command);
       return dispatcher.dispatch(command);
     },
     async focusWritingSpace(regionId, offset) {
@@ -1823,6 +1858,7 @@ installEmbedRuntime({
     },
     async getCollaborationMutations(afterSequence) {
       await initPromise;
+      if (exclusiveDocumentEdit) return [];
       await collaborationLiveAdapter.capturePending();
       return collaborationLiveAdapter.drain(afterSequence);
     },

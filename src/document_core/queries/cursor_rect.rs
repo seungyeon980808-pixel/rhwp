@@ -24,6 +24,13 @@ fn effective_char_count(text_run: &TextRunNode) -> usize {
     text_run.text.chars().count()
 }
 
+/// 빈 placeholder run은 인라인 표 전체 높이를 bbox로 사용한다.
+/// hit 영역은 유지하되 입력 캐럿에는 글자 높이만 사용한다.
+fn caret_run_height(bbox_height: f64, font_size: f64) -> f64 {
+    let font_size = font_size.max(1.0);
+    if bbox_height > font_size * 2.0 { font_size } else { bbox_height }
+}
+
 /// 표 셀 안 편집 캐럿과 IME 조합창이 공유하는 가시 경계다.
 ///
 /// TextRun의 실제 좌표가 고정 높이 셀 밖으로 이어져도 문서 모델의 offset은 보존한다.
@@ -1522,6 +1529,7 @@ impl DocumentCore {
             bbox_y: f64,
             bbox_w: f64,
             bbox_h: f64,
+            caret_h: f64,
             // 셀/글상자 컨텍스트 (본문 텍스트는 None)
             cell_context: Option<CellContext>,
             is_textbox: bool,
@@ -1780,6 +1788,7 @@ impl DocumentCore {
                             bbox_y: node.bbox.y,
                             bbox_w: node.bbox.width,
                             bbox_h: node.bbox.height,
+                            caret_h: caret_run_height(node.bbox.height, text_run.style.font_size),
                             cell_context,
                             is_textbox: false,
                             column_index: col,
@@ -1851,7 +1860,7 @@ impl DocumentCore {
             };
             let cursor_rect = format!(
                 ",\"cursorRect\":{{\"pageIndex\":{},\"x\":{:.1},\"y\":{:.1},\"height\":{:.1}}}",
-                page_num, cursor_x, run.bbox_y, run.bbox_h
+                page_num, cursor_x, run.bbox_y, run.caret_h
             );
             if let Some(ref ctx) = run.cell_context {
                 let outer = &ctx.path[0];
@@ -2368,10 +2377,6 @@ impl DocumentCore {
         //
         // 글상자 안 표 셀 (textbox 안 cell) 매칭이 textbox 영역보다 specific 이므로
         // clicked_cell 을 textbox_hit 보다 먼저 처리한다.
-        if let Some((idx, offset)) = hit_cell {
-            return Ok(format_hit(&runs[idx], offset, page_num));
-        }
-
         // 클릭 좌표가 속한 칼럼 결정 (다단 지원)
         let click_column = self.find_column_at_x(page_num, x);
 
@@ -2381,6 +2386,12 @@ impl DocumentCore {
             .filter(|cb| cb.has_meta)
             .filter(|cb| x >= cb.x && x <= cb.x + cb.w && y >= cb.y && y <= cb.y + cb.h)
             .min_by_key(|cb| ((cb.w.max(0.0) * cb.h.max(0.0)) * 1000.0) as i64);
+
+        if let Some((idx, offset)) = hit_cell {
+            if clicked_cell.map_or(true, |cb| runs[idx].table_id == cb.table_id) {
+                return Ok(format_hit(&runs[idx], offset, page_num));
+            }
+        }
 
         // 셀 내부 클릭이면: 해당 셀의 run만 검색하여 가장 가까운 위치 반환
         if let Some(cb) = clicked_cell {
@@ -3629,7 +3640,7 @@ impl DocumentCore {
                             page,
                             node.bbox.x + xr,
                             node.bbox.y,
-                            node.bbox.height,
+                            caret_run_height(node.bbox.height, tr.style.font_size),
                             child_cell_bounds,
                         ));
                     }
@@ -3736,7 +3747,7 @@ impl DocumentCore {
                             page,
                             node.bbox.x,
                             node.bbox.y,
-                            node.bbox.height,
+                            caret_run_height(node.bbox.height, tr.style.font_size),
                             child_cell_bounds,
                         ));
                     }
@@ -3745,7 +3756,7 @@ impl DocumentCore {
                             page,
                             node.bbox.x,
                             node.bbox.y,
-                            node.bbox.height.max(1.0),
+                            caret_run_height(node.bbox.height, tr.style.font_size).max(1.0),
                             child_cell_bounds,
                         ));
                     }
@@ -5791,6 +5802,13 @@ impl DocumentCore {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn inline_table_placeholder_uses_text_height_for_caret() {
+        assert_eq!(super::caret_run_height(194.0, 13.3), 13.3);
+        assert_eq!(super::caret_run_height(16.0, 13.3), 16.0);
+        assert_eq!(super::caret_run_height(120.0, 120.0), 120.0);
+    }
+
     use super::{clamp_cursor_to_cell_bounds, resolve_x_on_line, CellCursorBounds, LineRunView};
 
     #[test]

@@ -1949,6 +1949,11 @@ impl HwpDocument {
     /// 표의 셀을 병합한다.
     ///
     /// 반환값: JSON `{"ok":true,"cellCount":<N>}`
+    #[wasm_bindgen(js_name = editNestedTable)]
+    pub fn edit_nested_table(&mut self, section: u32, parent: u32, path_json: &str, options_json: &str) -> Result<String, JsValue> {
+        self.edit_nested_table_native(section as usize, parent as usize, path_json, options_json).map_err(Into::into)
+    }
+
     #[wasm_bindgen(js_name = mergeTableCells)]
     pub fn merge_table_cells(
         &mut self,

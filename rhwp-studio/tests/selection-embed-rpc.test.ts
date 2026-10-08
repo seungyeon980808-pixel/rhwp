@@ -93,3 +93,16 @@ test('embed selection edit v1은 비어 있는 snapshot id를 거부한다', asy
   await assert.rejects(request, /snapshotId must be a non-empty string/);
 });
 
+
+
+test('document editing RPC validates its mode and forwards only table or supported writing commands', async () => {
+  const rpc = handlers(); const calls: unknown[] = [];
+  rpc.setDocumentEditingMode = async mode => { calls.push(mode); };
+  rpc.executeWritingCommand = async command => { calls.push(command); return true; };
+  await routeEmbedRequest('setDocumentEditingMode', { canRequest: true, exclusive: true, frozen: false, expectedRevision: 7 }, rpc);
+  assert.equal(await routeEmbedRequest('executeWritingCommand', { command: 'table:cell-merge' }, rpc), true);
+  assert.equal(await routeEmbedRequest('executeWritingCommand', { command: 'table:pending-resize' }, rpc), true);
+  await assert.rejects(routeEmbedRequest('executeWritingCommand', { command: 'file:open' }, rpc), /Invalid writing command/);
+  await assert.rejects(routeEmbedRequest('setDocumentEditingMode', { canRequest: false, exclusive: true }, rpc));
+  assert.deepEqual(calls, [{ canRequest: true, exclusive: true, frozen: false, expectedRevision: 7 }, 'table:cell-merge', 'table:pending-resize']);
+});

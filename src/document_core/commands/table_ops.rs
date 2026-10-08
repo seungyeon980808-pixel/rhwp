@@ -37,6 +37,70 @@ impl DocumentCore {
         navigate_path_to_table(&mut section.paragraphs, path)
     }
 
+    /// Apply structural changes to the table at the innermost cell path. The
+    /// final segment identifies that table; its cell index need not survive CRUD.
+    pub(crate) fn edit_nested_table_native(
+        &mut self, section: usize, parent: usize, path_json: &str, options_json: &str,
+    ) -> Result<String, HwpError> {
+        let path = Self::parse_cell_path(path_json)?;
+        if path.len() < 2 { return Err(HwpError::RenderError("Nested table path required".into())); }
+        let options: serde_json::Value = serde_json::from_str(options_json)
+            .map_err(|e| HwpError::RenderError(e.to_string()))?;
+        let number = |key: &str| -> Result<u16, HwpError> {
+            options.get(key).and_then(|v| v.as_u64()).and_then(|v| u16::try_from(v).ok())
+                .ok_or_else(|| HwpError::RenderError(format!("Invalid {key}")))
+        };
+        let operation = options.get("operation").and_then(|v| v.as_str()).unwrap_or("");
+        let prefix = &path[..path.len()-1];
+        let host_para = prefix.last().unwrap().2;
+        let control = path.last().unwrap().0;
+        let table = {
+            let paras = self.get_cell_paragraphs_mut_by_path(section, parent, prefix)?;
+            let Some(Control::Table(table)) = paras.get_mut(host_para).and_then(|p| p.controls.get_mut(control))
+                else { return Err(HwpError::RenderError("Nested table not found".into())); };
+            // Mutate a copy so a rejected operation cannot partially change the document.
+            let mut edited = table.clone();
+            let result = match operation {
+                "merge" => edited.merge_cells(number("startRow")?, number("startCol")?, number("endRow")?, number("endCol")?),
+                "split" => edited.split_cell_into(number("row")?, number("col")?, number("rows")?, number("columns")?,
+                    options.get("equalHeight").and_then(|v| v.as_bool()).unwrap_or(false),
+                    options.get("mergeFirst").and_then(|v| v.as_bool()).unwrap_or(false)),
+                "split-range" => edited.split_cells_in_range(number("startRow")?, number("startCol")?, number("endRow")?, number("endCol")?, number("rows")?, number("columns")?, options.get("equalHeight").and_then(|v| v.as_bool()).unwrap_or(false)),
+                "insert-row" => edited.insert_row(number("row")?, options.get("below").and_then(|v| v.as_bool()).unwrap_or(false)),
+                "insert-column" => edited.insert_column(number("col")?, options.get("right").and_then(|v| v.as_bool()).unwrap_or(false)),
+                "delete-row" => edited.delete_row(number("row")?),
+                "delete-column" => edited.delete_column(number("col")?),
+                _ => return Err(HwpError::RenderError("Unsupported nested table operation".into())),
+            };
+            result.map_err(HwpError::RenderError)?;
+            edited.dirty = true;
+            edited.local_resize_cell_widths.clear(); edited.local_resize_cell_heights.clear();
+            *table = edited;
+            table.cells.iter().map(|cell| cell.paragraphs.len()).collect::<Vec<_>>()
+        };
+        // Reflow at each new inner cell's width, including merged/split cells.
+        for (cell, count) in table.iter().enumerate() {
+            let mut cell_path = path.clone(); cell_path.last_mut().unwrap().1 = cell;
+            for paragraph in 0..*count {
+                self.reflow_cell_paragraph_by_path(section, parent, &cell_path, paragraph);
+            }
+            self.recalculate_cell_paragraph_vpos_by_path(section, parent, &cell_path, 0, None);
+        }
+        self.mark_cell_control_dirty(section, parent, path[0].0);
+        self.document.sections[section].raw_stream = None;
+        self.recompose_section(section); self.paginate_if_needed();
+        let ctrl = path[0].0;
+        self.event_log.push(match operation {
+            "insert-row" => DocumentEvent::TableRowInserted { section, para: parent, ctrl },
+            "insert-column" => DocumentEvent::TableColumnInserted { section, para: parent, ctrl },
+            "delete-row" => DocumentEvent::TableRowDeleted { section, para: parent, ctrl },
+            "delete-column" => DocumentEvent::TableColumnDeleted { section, para: parent, ctrl },
+            "split" | "split-range" => DocumentEvent::CellSplit { section, para: parent, ctrl },
+            _ => DocumentEvent::CellsMerged { section, para: parent, ctrl },
+        });
+        Ok(super::super::helpers::json_ok_with("\"changed\":true"))
+    }
+
     /// 표에 행을 삽입한다 (네이티브).
     pub fn insert_table_row_native(
         &mut self,

@@ -30,7 +30,34 @@ function isBlockedInFormMode(commandId: string, ctx: EditorContext): boolean {
 }
 
 /** 통합 커맨드 디스패처: 메뉴/툴바/키보드 모든 입력의 단일 실행 경로 */
+const documentTableCommand = (command: string) => command.startsWith('table:') && command !== 'table:transpose-copy';
 export class CommandDispatcher {
+  private pendingDocumentCommand: { id: string; params?: Record<string, unknown> } | null = null;
+  private pendingDocumentOperation: (() => void) | null = null;
+  deferDocumentOperation(operation: () => void): boolean {
+    const ctx = this.services.getContext();
+    if (!ctx.isLiveCollaboration) return false;
+    if (!ctx.canRequestDocumentEdit) { this.eventBus.emit('command-blocked', unsupportedLiveStructureReason); return true; }
+    if (this.pendingDocumentOperation) return true;
+    this.pendingDocumentOperation = operation;
+    this.services.requestDocumentEdit?.('table:pending-resize');
+    return true;
+  }
+  cancelPendingDocumentOperation(): void { this.pendingDocumentOperation = null; this.pendingDocumentCommand = null; }
+  resumePendingDocumentCommand(command: string): boolean {
+    if (this.services.getContext().isLiveCollaboration || this.services.getContext().isDocumentEditFrozen) return false;
+    const pending = this.pendingDocumentCommand;
+    if (!pending || pending.id !== command) return false;
+    this.pendingDocumentCommand = null;
+    return this.dispatch(pending.id, pending.params);
+  }
+  resumePendingDocumentOperation(): boolean {
+    if (this.services.getContext().isLiveCollaboration || this.services.getContext().isDocumentEditFrozen) return false;
+    const operation = this.pendingDocumentOperation; this.pendingDocumentOperation = null;
+    if (!operation) return false;
+    operation(); return true;
+  }
+
   constructor(
     private registry: CommandRegistry,
     private services: CommandServices,
@@ -54,6 +81,12 @@ export class CommandDispatcher {
       return false;
     }
 
+    const ctx = this.services.getContext();
+    if (ctx.isLiveCollaboration && ctx.canRequestDocumentEdit && documentTableCommand(commandId)) {
+      this.pendingDocumentCommand = { id: commandId, params };
+      this.services.requestDocumentEdit?.(commandId, params);
+      return false;
+    }
     try {
       def.execute(this.services, params);
       // 커맨드 실행 후 UI 상태 갱신 알림
@@ -77,13 +110,14 @@ export class CommandDispatcher {
     const def = this.registry.get(commandId);
     if (!def) return '지원하지 않는 명령입니다.';
     const ctx = this.services.getContext();
+    if (ctx.isDocumentEditFrozen) return '문서 저장 또는 연결 확인이 끝나면 편집할 수 있습니다.';
     if (this.services.wasm?.hasRestrictedPromptSpaces?.() && commandId.startsWith('format:align-'))
       return '담당 구간을 나눈 문단의 정렬은 변경할 수 없습니다.';
     if (isBlockedInFormMode(commandId, ctx)) return '양식 입력 모드에서는 이 명령을 사용할 수 없습니다.';
-    if (isUnsupportedLiveFormat(commandId, ctx.isLiveCollaboration === true)) return unsupportedLiveFormatReason;
-    if (isUnsupportedLiveStructure(commandId, ctx.isLiveCollaboration === true)) return unsupportedLiveStructureReason;
+    if (isUnsupportedLiveFormat(commandId, ctx.isLiveCollaboration === true && !(ctx.canRequestDocumentEdit && documentTableCommand(commandId)))) return unsupportedLiveFormatReason;
+    if (isUnsupportedLiveStructure(commandId, ctx.isLiveCollaboration === true && !ctx.canRequestDocumentEdit)) return unsupportedLiveStructureReason;
     if (def.canExecute && !def.canExecute(ctx)) return '이 명령을 사용할 수 있는 문서 영역을 먼저 선택하세요.';
-    if (ctx.isLiveCollaboration && (commandId.startsWith('format:') || commandId.startsWith('insert:')
+    if (ctx.isLiveCollaboration && !(ctx.canRequestDocumentEdit && documentTableCommand(commandId)) && (commandId.startsWith('format:') || commandId.startsWith('insert:')
       || commandId.startsWith('table:') && commandId !== 'table:transpose-copy')
       && this.services.getInputHandler?.()?.canEditLiveSelection?.() === false)
       return '선택한 영역을 편집할 수 없습니다. 담당 범위와 다른 참여자의 작성 상태를 확인하세요.';

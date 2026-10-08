@@ -29146,3 +29146,37 @@ fn collaboration_structured_query_keeps_outer_cell_and_nested_paths() {
     }
     assert_eq!(nested_count, 1);
 }
+
+#[test]
+fn nested_table_structure_edit_targets_inner_table_and_survives_exports() {
+    let mut doc = create_doc_with_table();
+    // The synthetic table fixture has no style catalog; use the standard sample's registered styles for HWPX export.
+    doc.document.doc_info = HwpDocument::from_bytes(&std::fs::read("samples/biz_plan.hwp").unwrap()).unwrap().document.doc_info.clone();
+    let inner = doc.document.sections[0].paragraphs[0].controls[0].clone();
+    let Control::Table(outer) = &mut doc.document.sections[0].paragraphs[0].controls[0] else { panic!("table"); };
+    outer.cells[0].paragraphs[0].controls.push(inner);
+    let path = r#"[{"controlIndex":0,"cellIndex":0,"cellParaIndex":0},{"controlIndex":0,"cellIndex":1,"cellParaIndex":0}]"#;
+    doc.edit_nested_table_native(0, 0, path, r#"{"operation":"merge","startRow":0,"startCol":0,"endRow":0,"endCol":1}"#).unwrap();
+    let read = |value: String| serde_json::from_str::<serde_json::Value>(&value).unwrap();
+    assert_eq!(read(doc.get_table_dimensions_by_path_native(0, 0, path).unwrap())["cellCount"], 3);
+    assert_eq!(read(doc.get_table_dimensions_native(0, 0, 0).unwrap())["cellCount"], 4);
+    doc.edit_nested_table_native(0, 0, path, r#"{"operation":"split","row":0,"col":0,"rows":1,"columns":2}"#).unwrap();
+    assert_eq!(read(doc.get_table_dimensions_by_path_native(0, 0, path).unwrap())["cellCount"], 4);
+    for options in [r#"{"operation":"insert-row","row":0,"below":true}"#, r#"{"operation":"insert-column","col":0,"right":true}"#] {
+        doc.edit_nested_table_native(0, 0, path, options).unwrap();
+    }
+    assert_eq!(read(doc.get_table_dimensions_by_path_native(0, 0, path).unwrap())["rowCount"], 3);
+    assert_eq!(read(doc.get_table_dimensions_by_path_native(0, 0, path).unwrap())["colCount"], 3);
+    doc.edit_nested_table_native(0, 0, path, r#"{"operation":"delete-row","row":1}"#).unwrap();
+    doc.edit_nested_table_native(0, 0, path, r#"{"operation":"delete-column","col":1}"#).unwrap();
+    let before = doc.get_table_dimensions_by_path_native(0, 0, path).unwrap();
+    assert!(doc.edit_nested_table_native(0, 0, path, r#"{"operation":"merge","startRow":0,"startCol":0,"endRow":70000,"endCol":1}"#).is_err());
+    assert_eq!(doc.get_table_dimensions_by_path_native(0, 0, path).unwrap(), before);
+    for bytes in [doc.export_hwp_native().unwrap(), doc.export_hwpx_native().unwrap()] {
+        let reopened = HwpDocument::from_bytes(&bytes).unwrap();
+        let outer_index = reopened.document.sections[0].paragraphs[0].controls.iter().position(|c| matches!(c, Control::Table(_))).unwrap();
+        let restored_path = format!(r#"[{{"controlIndex":{},"cellIndex":0,"cellParaIndex":0}},{{"controlIndex":0,"cellIndex":1,"cellParaIndex":0}}]"#, outer_index);
+        assert_eq!(read(reopened.get_table_dimensions_by_path_native(0, 0, &restored_path).unwrap())["cellCount"], 4);
+        assert_eq!(read(reopened.get_table_dimensions_native(0, 0, outer_index).unwrap())["cellCount"], 4);
+    }
+}

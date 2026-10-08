@@ -37,6 +37,8 @@ export interface EditorContext {
   /** 현재 커서 위치가 양식 모드에서 수정 가능한 누름틀인가? */
   canEditFormField: boolean;
   readonly isLiveCollaboration?: boolean;
+  readonly canRequestDocumentEdit?: boolean;
+  readonly isDocumentEditFrozen?: boolean;
   /** Undo 가능한가? */
   canUndo: boolean;
   /** Redo 가능한가? */
@@ -88,4 +90,5 @@ export interface CommandServices {
   gotoPage: (globalPage: number) => boolean;
   /** 에디터 편집 모드 변경 */
   setEditMode: (mode: EditorEditMode) => void;
+  requestDocumentEdit?: (command: string, params?: Record<string, unknown>) => void;
 }

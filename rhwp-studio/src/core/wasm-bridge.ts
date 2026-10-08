@@ -293,8 +293,8 @@ export class WasmBridge {
     return this.livePastePolicy?.epoch;
   }
 
-  restrictLiveTableStructure(): void {
-    this.liveTableStructureRestricted = true;
+  restrictLiveTableStructure(restricted = true): void {
+    this.liveTableStructureRestricted = restricted;
   }
 
   isLiveStructureRestricted(): boolean {
@@ -2458,6 +2458,13 @@ export class WasmBridge {
     return JSON.parse(
       this.doc.getCursorRectByPathNear(sec, parentPara, pathJson, charOffset, hintPage),
     );
+  }
+
+  editNestedTable(sec: number, parent: number, path: readonly { controlIdx: number; cellIdx: number; cellParaIdx: number }[] | readonly { controlIndex: number; cellIndex: number; cellParaIndex: number }[], options: Record<string, unknown>): { ok: boolean } {
+    this.assertTableStructureAllowed();
+    if (!this.doc) throw new Error('No document loaded');
+    const nativePath = path.map(p => 'controlIdx' in p ? { controlIndex: p.controlIdx, cellIndex: p.cellIdx, cellParaIndex: p.cellParaIdx } : p);
+    return JSON.parse(this.doc.editNestedTable(sec, parent, JSON.stringify(nativePath), JSON.stringify(options)));
   }
 
   getCellInfoByPath(sec: number, parentPara: number, pathJson: string): CellInfo {

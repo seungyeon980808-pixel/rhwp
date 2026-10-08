@@ -1036,6 +1036,7 @@ export function finishResizeDrag(this: any, e: MouseEvent): void {
     }
   }
 
+  const applyResize = () => {
   // WASM 배치 API 호출 (복합 셀 보상 변경은 스냅샷으로 Undo 기록)
   try {
     this.executeOperation({
@@ -1065,6 +1066,8 @@ export function finishResizeDrag(this: any, e: MouseEvent): void {
     console.warn('[InputHandler] resizeTableCells 실패:', err);
   }
 
+  };
+  if (!this.dispatcher?.deferDocumentOperation(applyResize)) applyResize();
   this.cleanupResizeDrag();
 }
 

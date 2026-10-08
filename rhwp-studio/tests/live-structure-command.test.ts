@@ -97,3 +97,43 @@ test('dispatcher rejects live structural commands with a reason, including stale
   assert.equal(dispatcher.dispatch('table:insert-row-below\0'), false);
   assert.equal(dispatcher.isEnabled('table:transpose-copy'), true);
 });
+
+test('host table commands defer until an exclusive document transaction is granted', () => {
+  const eventBus = new EventBus(); let exclusive = false; let executed = 0; const requested: string[] = [];
+  const context = (): EditorContext => ({ hasDocument: true, hasSelection: true, hasCopiedFormat: false,
+    inTable: true, inCellSelectionMode: true, hasMultiCellSelection: true, hasTableTransposeClipboard: false,
+    inTableObjectSelection: false, inPictureObjectSelection: false, inField: false, isEditable: true,
+    editMode: 'normal', isFormMode: false, canEditFormField: false, canUndo: false, canRedo: false,
+    zoom: 1, showControlCodes: false, showParagraphMarks: false, isDirty: false,
+    isLiveCollaboration: !exclusive, canRequestDocumentEdit: true });
+  const services: CommandServices = { eventBus, wasm: new WasmBridge(), documentState: new DocumentDirtyState(eventBus),
+    getContext: context, getInputHandler: () => null, getViewportManager: () => null, gotoPage: () => false, setEditMode: () => {},
+    requestDocumentEdit: command => requested.push(command) };
+  const registry = new CommandRegistry(); registry.register({ id: 'table:cell-merge', label: 'Merge', execute: (_services, params) => { assert.deepEqual(params, { count: 2 }); executed++; } });
+  const dispatcher = new CommandDispatcher(registry, services, eventBus);
+  assert.equal(dispatcher.isEnabled('table:cell-merge'), true);
+  assert.equal(dispatcher.dispatch('table:cell-merge', { count: 2 }), false);
+  assert.deepEqual(requested, ['table:cell-merge']); assert.equal(executed, 0);
+  exclusive = true; assert.equal(dispatcher.resumePendingDocumentCommand('table:cell-merge'), true); assert.equal(executed, 1);
+  exclusive = false;
+  assert.equal(dispatcher.deferDocumentOperation(() => executed++), true); assert.equal(executed, 1);
+  assert.equal(dispatcher.resumePendingDocumentOperation(), false);
+  exclusive = true; assert.equal(dispatcher.resumePendingDocumentOperation(), true); assert.equal(executed, 2);
+  assert.equal(dispatcher.resumePendingDocumentOperation(), false);
+});
+
+test('exclusive host row insertion survives both native exports and restrictions can be reinstated', () => {
+  const h = harness();
+  try {
+    h.wasm.restrictLiveTableStructure();
+    assert.throws(() => h.wasm.insertTableRow(0, 2, 0, 0, true), UnsupportedLiveStructureError);
+    h.wasm.restrictLiveTableStructure(false); h.wasm.insertTableRow(0, 2, 0, 0, true);
+    assert.equal(h.wasm.getTableDimensions(0, 2, 0).rowCount, 3);
+    for (const bytes of [h.wasm.exportHwpVerified(), h.wasm.exportHwpx()]) {
+      const reopened = new WasmBridge(); reopened.loadDocument(bytes);
+      try { assert.equal(reopened.getTableDimensions(0, 2, 0).rowCount, 3); } finally { reopened.releaseDocument(); }
+    }
+    h.wasm.restrictLiveTableStructure();
+    assert.throws(() => h.wasm.insertTableRow(0, 2, 0, 0, true), UnsupportedLiveStructureError);
+  } finally { h.wasm.releaseDocument(); }
+});

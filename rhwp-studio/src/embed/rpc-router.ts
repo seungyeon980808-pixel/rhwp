@@ -141,6 +141,7 @@ export interface EmbedRpcHandlers {
   undo?(): Promise<EmbedHistoryUndoResultV1>;
   collaborationActive?(): boolean;
   beginCollaboration?(): Promise<{ readonly schemaVersion: 1; readonly readOnly: true }>;
+  setDocumentEditingMode?(mode: { canRequest: boolean; exclusive: boolean; frozen?: boolean; expectedRevision?: number }): Promise<void>;
   beginLiveCollaboration?(): Promise<{ readonly schemaVersion: 1; readonly readOnly: false }>;
   setLivePastePolicy?(policy: Readonly<{ epoch: string; writableRegionIds: readonly string[]; promptPolicy?: Readonly<{ memberId: string | null; spaces: readonly Readonly<{ id: string; regionId: string; start: number; end: number; memberId: string | null }>[]; texts: readonly Readonly<{ regionId: string; text: string }>[] }> }>): Promise<void>;
   executeWritingCommand?(command: string): Promise<boolean>;
@@ -301,6 +302,13 @@ export async function routeEmbedRequest(
       if (Object.keys(params).length !== 0) throw new Error('beginLiveCollaboration does not accept parameters');
       return handlers.beginLiveCollaboration();
     }
+    case 'setDocumentEditingMode': {
+      if (!handlers.setDocumentEditingMode || typeof params.canRequest !== 'boolean' || typeof params.exclusive !== 'boolean'
+        || params.frozen !== undefined && typeof params.frozen !== 'boolean' || params.exclusive && !params.canRequest || params.expectedRevision !== undefined && (!Number.isSafeInteger(params.expectedRevision) || (params.expectedRevision as number) < 0)
+        || Object.keys(params).some(key => !['canRequest', 'exclusive', 'frozen', 'expectedRevision'].includes(key))) throw new TypeError('Invalid document editing mode');
+      await handlers.setDocumentEditingMode(params as { canRequest: boolean; exclusive: boolean; frozen?: boolean; expectedRevision?: number });
+      return { ok: true };
+    }
     case 'setLivePastePolicy': {
       if (!handlers.setLivePastePolicy || typeof params.epoch !== 'string' || !params.epoch
         || !Array.isArray(params.writableRegionIds) || params.writableRegionIds.length > 10_000
@@ -322,7 +330,7 @@ export async function routeEmbedRequest(
     }
     case 'executeWritingCommand': {
       if (!handlers.executeWritingCommand || typeof params.command !== 'string'
-        || !['format:bold', 'format:italic', 'format:align-left', 'format:align-center', 'format:align-right', 'format:align-justify'].includes(params.command)) throw new TypeError('Invalid writing command');
+        || (!['format:bold', 'format:italic', 'format:align-left', 'format:align-center', 'format:align-right', 'format:align-justify'].includes(params.command) && !/^table:[a-z-]+$/.test(params.command))) throw new TypeError('Invalid writing command');
       return handlers.executeWritingCommand(params.command);
     }
     case 'focusWritingSpace': {
