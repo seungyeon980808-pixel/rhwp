@@ -110,3 +110,19 @@ test('document editing RPC validates its mode and forwards only table or support
   await assert.rejects(routeEmbedRequest('setDocumentEditingMode', { canRequest: true, exclusive: true, tableAddress: 'c:0:4:1:2' }, rpc));
   await assert.rejects(routeEmbedRequest('setDocumentEditingMode', { canRequest: true, exclusive: false, tableAddress: 'c:0:4:1' }, rpc));
 });
+
+test('writing RPC accepts registered rich-format checkpoint commands and rejects unknown IDs before invoking handlers', async () => {
+  const rpc = handlers(); const calls: string[] = [];
+  rpc.executeWritingCommand = async command => { calls.push(command); return false; };
+  const commands = ['format:char-shape', 'format:para-shape', 'format:toggle-numbering', 'format:toggle-bullet',
+    'format:style-dialog', 'format:normal', 'format:superscript', 'format:line-spacing-increase',
+    'edit:format-paste', 'insert:equation', 'insert:symbols', 'page:break', 'page:setup', 'file:page-setup'];
+  for (const command of commands)
+    assert.equal(await routeEmbedRequest('executeWritingCommand', { command }, rpc), false, 'permission refusal must propagate');
+  assert.deepEqual(calls, commands);
+  for (const command of ['format:unknown', 'table:unknown', 'insert:unknown', 'page:unknown', 'file:open', 'file:save', 'edit:paste', 'edit:format-copy', '', '__proto__', 'table:cell-merge;file:open'])
+    await assert.rejects(routeEmbedRequest('executeWritingCommand', { command }, rpc), /Invalid writing command/);
+  assert.deepEqual(calls, commands, 'invalid commands never reach the execution handler');
+  delete rpc.executeWritingCommand;
+  await assert.rejects(routeEmbedRequest('executeWritingCommand', { command: 'format:char-shape' }, rpc), /Invalid writing command/);
+});

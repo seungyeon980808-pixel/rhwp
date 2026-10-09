@@ -9,6 +9,8 @@ import { enableDialogDrag } from './dialog-drag';
 export class CellSplitDialog {
   onApply: ((nRows: number, mCols: number, equalHeight: boolean, mergeFirst: boolean) => void) | null = null;
 
+  afterClose?: () => void;
+
   private overlay: HTMLDivElement | null = null;
   private dialog: HTMLDivElement | null = null;
   private escHandler: ((e: KeyboardEvent) => void) | null = null;
@@ -29,18 +31,25 @@ export class CellSplitDialog {
   show(): void {
     this.build();
     this.escHandler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') this.hide();
+      // Keep dialog input from reaching the editor's cell shortcuts.
+      e.stopPropagation();
+      if (e.key === 'Escape') { e.preventDefault(); this.hide(); }
+      else if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); this.doApply(); }
     };
     document.body.appendChild(this.overlay!);
-    document.addEventListener('keydown', this.escHandler);
+    document.addEventListener('keydown', this.escHandler, true);
+    this.colInput.focus();
+    this.colInput.select();
   }
 
   hide(): void {
     if (this.escHandler) {
-      document.removeEventListener('keydown', this.escHandler);
+      document.removeEventListener('keydown', this.escHandler, true);
       this.escHandler = null;
     }
+    const wasOpen = this.overlay?.isConnected;
     this.overlay?.remove();
+    if (wasOpen) this.afterClose?.();
   }
 
   private build(): void {

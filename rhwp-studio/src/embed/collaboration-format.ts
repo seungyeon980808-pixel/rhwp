@@ -1,5 +1,10 @@
 import type { CollaborationFormatOpV1, CollaborationManifestRegionV1 } from './collaboration-live-contract.ts';
 
+const integer = (min: number, max: number) => (value: unknown): boolean => typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max;
+const color = (value: unknown): boolean => typeof value === 'string' && /^#[0-9a-f]{6}$/iu.test(value);
+const oneOf = (values: string[]) => (value: unknown): boolean => typeof value === 'string' && values.includes(value);
+const sevenIntegers = (min: number, max: number) => (value: unknown): boolean => Array.isArray(value) && value.length === 7 && value.every(integer(min, max));
+
 export function parseFormatOperation(value: Record<string, unknown>): CollaborationFormatOpV1 | null {
   if (value.type !== 'format' || value.version !== 1 || typeof value.offset !== 'number'
     || !Number.isSafeInteger(value.offset) || value.offset < 0 || typeof value.count !== 'number'
@@ -8,31 +13,25 @@ export function parseFormatOperation(value: Record<string, unknown>): Collaborat
   const marks = value.marks;
   if (typeof marks !== 'object' || marks === null || Array.isArray(marks)) return null;
   const base = { type: 'format', version: 1, offset: value.offset, count: value.count } as const;
-  if (value.scope === 'paragraph' && 'alignment' in marks && typeof marks.alignment === 'string'
-    && Object.keys(marks).length === 1 && ['justify', 'left', 'right', 'center', 'distribute', 'split'].includes(marks.alignment))
-    return { ...base, scope: 'paragraph', marks: { alignment: marks.alignment } };
-  if (value.scope !== 'character' || value.count === 0 || Object.keys(marks).length === 0
-    || Object.keys(marks).some((key) => !['bold', 'italic', 'underline', 'textColor', 'fontSize', 'ratios', 'spacings'].includes(key))) return null;
-  if ('bold' in marks && typeof marks.bold !== 'boolean') return null;
-  if ('italic' in marks && typeof marks.italic !== 'boolean') return null;
-  if ('underline' in marks && typeof marks.underline !== 'boolean') return null;
-  if ('textColor' in marks && (typeof marks.textColor !== 'string' || !/^#[0-9a-f]{6}$/iu.test(marks.textColor))) return null;
-  if ('fontSize' in marks && (typeof marks.fontSize !== 'number' || !Number.isSafeInteger(marks.fontSize)
-    || marks.fontSize < 100 || marks.fontSize > 100_000)) return null;
-  for (const [name, min, max] of [['ratios', 1, 255], ['spacings', -128, 127]] as const) {
-    const values = (marks as Record<string, unknown>)[name];
-    if (name in marks && (!Array.isArray(values) || values.length !== 7
-      || values.some(value => !Number.isSafeInteger(value) || value < min || value > max))) return null;
-  }
-  return { ...base, scope: 'character', marks: {
-    ...('bold' in marks && typeof marks.bold === 'boolean' ? { bold: marks.bold } : {}),
-    ...('italic' in marks && typeof marks.italic === 'boolean' ? { italic: marks.italic } : {}),
-    ...('underline' in marks && typeof marks.underline === 'boolean' ? { underline: marks.underline } : {}),
-    ...('textColor' in marks && typeof marks.textColor === 'string' ? { textColor: marks.textColor } : {}),
-    ...('fontSize' in marks ? { fontSize: marks.fontSize as number } : {}),
-    ...('ratios' in marks ? { ratios: [...marks.ratios as number[]] } : {}),
-    ...('spacings' in marks ? { spacings: [...marks.spacings as number[]] } : {}),
-  } };
+  const characterRules: Record<string, (value: unknown) => boolean> = {
+    ...Object.fromEntries(['bold', 'italic', 'underline', 'superscript', 'subscript', 'strikethrough', 'emboss', 'engrave'].map(key => [key, (v: unknown) => typeof v === 'boolean'])),
+    textColor: color, shadeColor: color,
+    outlineType: integer(0, 6), shadowType: integer(0, 2),
+    underlineType: oneOf(['None', 'Bottom', 'Top']),
+    fontSize: integer(100, 100_000), ratios: sevenIntegers(1, 255), spacings: sevenIntegers(-128, 127),
+  };
+  const paragraphRules: Record<string, (value: unknown) => boolean> = {
+    alignment: oneOf(['justify', 'left', 'right', 'center', 'distribute', 'split']),
+    lineSpacing: integer(0, 100_000), lineSpacingType: oneOf(['Percent', 'Fixed', 'SpaceOnly', 'Minimum']),
+    indent: integer(-2_000_000, 2_000_000),
+  };
+  if (value.scope !== 'character' && value.scope !== 'paragraph') return null;
+  if (value.scope === 'character' && value.count === 0) return null;
+  const rules = value.scope === 'character' ? characterRules : paragraphRules;
+  const entries = Object.entries(marks);
+  if (entries.length === 0 || entries.some(([key, val]) => !rules[key]?.(val))) return null;
+  return { ...base, scope: value.scope, marks: Object.fromEntries(entries.map(([key, val]) => [key, Array.isArray(val) ? [...val] : val])) } as CollaborationFormatOpV1;
+
 }
 
 export function formatOperations(before: CollaborationManifestRegionV1, after: CollaborationManifestRegionV1): readonly CollaborationFormatOpV1[] {
@@ -61,10 +60,23 @@ export function formatOperations(before: CollaborationManifestRegionV1, after: C
       const end = points[index + 1];
       if (end === undefined) continue;
       const old = oldRuns.find((entry) => entry.start <= start && entry.end > start)?.properties;
+      // Native insertion inherits its boundary style; missing runs are not changes
+      // to false/zero defaults. Avoid allocating new shape IDs for plain typing.
+      const inheritedOffset = Math.max(0, prefix - 1);
+      const baseline = old ?? before.runs.find(entry => entry.start <= inheritedOffset && entry.end > inheritedOffset)?.properties;
       const marks = {
         ...(old?.bold !== run.properties.bold ? { bold: run.properties.bold ?? false } : {}),
         ...(old?.italic !== run.properties.italic ? { italic: run.properties.italic ?? false } : {}),
         ...(old?.underline !== run.properties.underline ? { underline: run.properties.underline ?? false } : {}),
+        ...((baseline?.superscript ?? false) !== (run.properties.superscript ?? false) ? { superscript: run.properties.superscript ?? false } : {}),
+        ...((baseline?.subscript ?? false) !== (run.properties.subscript ?? false) ? { subscript: run.properties.subscript ?? false } : {}),
+        ...((baseline?.strikethrough ?? false) !== (run.properties.strikethrough ?? false) ? { strikethrough: run.properties.strikethrough ?? false } : {}),
+        ...((baseline?.emboss ?? false) !== (run.properties.emboss ?? false) ? { emboss: run.properties.emboss ?? false } : {}),
+        ...((baseline?.engrave ?? false) !== (run.properties.engrave ?? false) ? { engrave: run.properties.engrave ?? false } : {}),
+        ...((baseline?.outlineType ?? 0) !== (run.properties.outlineType ?? 0) ? { outlineType: run.properties.outlineType ?? 0 } : {}),
+        ...((baseline?.shadowType ?? 0) !== (run.properties.shadowType ?? 0) ? { shadowType: run.properties.shadowType ?? 0 } : {}),
+        ...((baseline?.underlineType ?? 'None') !== (run.properties.underlineType ?? 'None') ? { underlineType: run.properties.underlineType ?? 'None' } : {}),
+        ...((baseline?.shadeColor ?? '#ffffff') !== (run.properties.shadeColor ?? '#ffffff') ? { shadeColor: run.properties.shadeColor ?? '#ffffff' } : {}),
         ...(old?.textColor !== run.properties.textColor ? { textColor: run.properties.textColor ?? '#000000' } : {}),
         ...(old?.fontSize !== run.properties.fontSize ? { fontSize: run.properties.fontSize ?? 1000 } : {}),
         ...(JSON.stringify(old?.ratios) !== JSON.stringify(run.properties.ratios) ? { ratios: run.properties.ratios ?? Array(7).fill(100) } : {}),
@@ -76,9 +88,16 @@ export function formatOperations(before: CollaborationManifestRegionV1, after: C
   const oldParagraphs = before.paragraphs ?? [before];
   let offset = 0;
   for (const [index, paragraph] of (after.paragraphs ?? [after]).entries()) {
-    if (oldParagraphs[index]?.paragraph.alignment !== paragraph.paragraph.alignment)
-      operations.push({ type: 'format', version: 1, scope: 'paragraph', offset, count: paragraph.text.length,
-        marks: { alignment: paragraph.paragraph.alignment ?? 'left' } });
+    const old = oldParagraphs[index]?.paragraph;
+    const current = paragraph.paragraph;
+    const marks = {
+      ...(old?.alignment !== current.alignment ? { alignment: current.alignment ?? 'left' } : {}),
+      ...((old?.lineSpacing ?? 160) !== (current.lineSpacing ?? 160) ? { lineSpacing: current.lineSpacing ?? 160 } : {}),
+      ...((old?.lineSpacingType ?? 'Percent') !== (current.lineSpacingType ?? 'Percent') ? { lineSpacingType: current.lineSpacingType ?? 'Percent' } : {}),
+      ...((old?.indent ?? 0) !== (current.indent ?? 0) ? { indent: Math.round((current.indent ?? 0) * 150) } : {}),
+    };
+    if (Object.keys(marks).length > 0)
+      operations.push({ type: 'format', version: 1, scope: 'paragraph', offset, count: paragraph.text.length, marks });
     offset += paragraph.text.length + 1;
   }
   const compact: CollaborationFormatOpV1[] = [];

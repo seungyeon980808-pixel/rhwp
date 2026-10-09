@@ -1,4 +1,5 @@
 import type { CommandDef } from '../types';
+import { applyNormalCharacterStyle, adjustFirstLineIndent } from '../format-shortcuts.ts';
 import { CharShapeDialog } from '@/ui/char-shape-dialog';
 import { ParaShapeDialog } from '@/ui/para-shape-dialog';
 import { NumberingDialog } from '@/ui/numbering-dialog';
@@ -72,6 +73,7 @@ export const formatCommands: CommandDef[] = [
   {
     id: 'format:superscript',
     label: '위 첨자',
+    shortcutLabel: 'Alt+Shift+P',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
       services.getInputHandler()?.toggleFormat('superscript');
@@ -80,10 +82,32 @@ export const formatCommands: CommandDef[] = [
   {
     id: 'format:subscript',
     label: '아래 첨자',
+    shortcutLabel: 'Alt+Shift+S',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
       services.getInputHandler()?.toggleFormat('subscript');
     },
+  },
+  {
+    id: 'format:normal',
+    label: '보통 모양',
+    shortcutLabel: 'Alt+Shift+C',
+    canExecute: (ctx) => ctx.hasDocument,
+    execute: applyNormalCharacterStyle,
+  },
+  {
+    id: 'format:indent',
+    label: '첫 줄 들여쓰기',
+    shortcutLabel: 'Ctrl+Shift+I',
+    canExecute: (ctx) => ctx.hasDocument,
+    execute(services) { adjustFirstLineIndent(services, 1); },
+  },
+  {
+    id: 'format:outdent',
+    label: '첫 줄 내어쓰기',
+    shortcutLabel: 'Ctrl+Shift+O',
+    canExecute: (ctx) => ctx.hasDocument,
+    execute(services) { adjustFirstLineIndent(services, -1); },
   },
   // 줄 간격
   {
@@ -200,7 +224,7 @@ export const formatCommands: CommandDef[] = [
   {
     id: 'format:align-center',
     label: '가운데 정렬',
-    shortcutLabel: 'Ctrl+Shift+C / Alt+Shift+C',
+    shortcutLabel: 'Ctrl+Shift+C',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
       services.getInputHandler()?.applyParaAlign('center');
@@ -254,7 +278,6 @@ export const formatCommands: CommandDef[] = [
       const charProps = ih.getCharProperties();
       // 대화상자 열기 전 선택 범위를 저장 (대화상자 조작 중 선택이 풀릴 수 있음)
       const savedSel = ih.getSelection();
-      if (!savedSel) return;
       const dialog = new CharShapeDialog(services.wasm, services.eventBus);
       dialog.onApply = (mods) => {
         // fontName → fontId 변환 (WASM parse_char_shape_mods는 fontId만 인식)
@@ -263,7 +286,8 @@ export const formatCommands: CommandDef[] = [
           if (fontId >= 0) mods.fontId = fontId;
           delete mods.fontName;
         }
-        ih.applyCharPropsToRange(savedSel.start, savedSel.end, mods);
+        if (savedSel) ih.applyCharPropsToRange(savedSel.start, savedSel.end, mods);
+        else services.eventBus.emit('format-char', mods);
       };
       dialog.onClose = () => ih.focus();
       dialog.show(charProps);
@@ -302,6 +326,7 @@ export const formatCommands: CommandDef[] = [
   },
   {
     id: 'format:toggle-numbering',
+    shortcutLabel: 'Ctrl+Shift+Insert',
     label: '문단 번호 토글',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
@@ -310,6 +335,7 @@ export const formatCommands: CommandDef[] = [
   },
   {
     id: 'format:toggle-bullet',
+    shortcutLabel: 'Ctrl+Shift+Delete',
     label: '글머리표 토글',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services, params) {

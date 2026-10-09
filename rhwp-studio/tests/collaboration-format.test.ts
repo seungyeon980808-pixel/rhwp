@@ -88,3 +88,34 @@ test('adjacent identical character changes compact without including an unchange
     { type: 'format', version: 1, scope: 'character', offset: 4, count: 2, marks: { bold: true } },
   ]);
 });
+
+test('normal attributes reset to false and paragraph indent emits native units without touching alignment', () => {
+  const before: CollaborationManifestRegionV1 = { id: 'b:0:0', kind: 'body', text: 'ab', paragraph: { alignment: 'right', indent: 0, lineSpacing: 160 },
+    runs: [{ start: 0, end: 2, properties: { superscript: true, subscript: false, emboss: true, shadowType: 2 } }] };
+  const after = { ...before, paragraph: { ...before.paragraph, indent: 40 / 3, lineSpacing: 180 },
+    runs: [{ start: 0, end: 2, properties: { superscript: false, subscript: false, emboss: false, shadowType: 0 } }] };
+  const ops = formatOperations(before, after);
+  assert.deepEqual(ops, [
+    { type: 'format', version: 1, scope: 'character', offset: 0, count: 2, marks: { superscript: false, emboss: false, shadowType: 0 } },
+    { type: 'format', version: 1, scope: 'paragraph', offset: 0, count: 2, marks: { lineSpacing: 180, indent: 2000 } },
+  ]);
+  for (const op of ops) assert.deepEqual(parseFormatOperation(op), op);
+  for (const marks of [{ indent: 2_000_001 }, { indent: 0.5 }, { lineSpacingType: 'bogus' }, { fontId: 1 }, {}])
+    assert.equal(parseFormatOperation({ ...ops[1], marks }), null);
+  for (const marks of [{ superscript: 1 }, { outlineType: 7 }, { shadowType: 3 }, { underlineType: 'Middle' }, { shadeColor: 'red' }])
+    assert.equal(parseFormatOperation({ ...ops[0], marks }), null);
+  for (const id of ['normal', 'superscript', 'subscript', 'indent', 'outdent', 'line-spacing-increase', 'line-spacing-decrease'])
+    assert.equal(isUnsupportedLiveFormat(`format:${id}`, true), false);
+});
+
+test('new plain text does not replay native default decorations but can clear an inherited superscript', () => {
+  const defaults = { superscript: false, subscript: false, strikethrough: false, emboss: false, engrave: false, outlineType: 0, shadowType: 0, underlineType: 'None', shadeColor: '#ffffff' };
+  const before: CollaborationManifestRegionV1 = { id: 'b:0:0', kind: 'body', text: 'a', paragraph: {}, runs: [{ start: 0, end: 1, properties: defaults }] };
+  const after = { ...before, text: 'ab', runs: [{ start: 0, end: 2, properties: defaults }] };
+  assert.deepEqual(formatOperations(before, after), []);
+  const styledBefore = { ...before, runs: [{ start: 0, end: 1, properties: { ...defaults, superscript: true } }] };
+  const styledAfter = { ...after, runs: [styledBefore.runs[0], { start: 1, end: 2, properties: defaults }] };
+  assert.deepEqual(formatOperations(styledBefore, styledAfter), [
+    { type: 'format', version: 1, scope: 'character', offset: 1, count: 1, marks: { superscript: false } },
+  ]);
+});

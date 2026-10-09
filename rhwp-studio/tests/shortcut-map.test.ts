@@ -66,13 +66,33 @@ test('표 줄/칸 추가·지우기 단축키는 대화상자 명령으로 매�
   assert.equal(command({ key: 'enter', altKey: true }, 'mac'), 'table:insert-row-col');
   assert.equal(command({ key: 'Enter', altKey: true }, 'other'), 'table:insert-row-col');
   assert.equal(command({ key: 'enter', altKey: true }, 'other'), 'table:insert-row-col');
-  assert.equal(command({ key: 'Insert', altKey: true }, 'mac'), null);
+  assert.equal(command({ key: 'Insert', altKey: true }, 'mac'), 'table:insert-row-col');
   assert.equal(command({ key: 'Help', altKey: true }, 'mac'), null);
-  assert.equal(command({ key: 'Insert', altKey: true }, 'other'), null);
-  assert.equal(command({ key: 'insert', altKey: true }, 'other'), null);
+  assert.equal(command({ key: 'Insert', altKey: true }, 'other'), 'table:insert-row-col');
+  assert.equal(command({ key: 'insert', altKey: true }, 'other'), 'table:insert-row-col');
   assert.equal(command({ key: 'Help', altKey: true }, 'other'), null);
-  assert.equal(command({ key: 'Process', code: 'Insert', altKey: true }, 'other'), null);
+  assert.equal(command({ key: 'Process', code: 'Insert', altKey: true }, 'other'), 'table:insert-row-col');
   assert.equal(command({ key: 'Process', code: 'Help', altKey: true }, 'other'), null);
   assert.equal(command({ key: 'Delete', altKey: true }), 'table:delete-row-col');
   assert.equal(command({ key: 'delete', altKey: true }), 'table:delete-row-col');
+});
+
+
+test('한컴 서식 별칭은 영문·한글·Option 문자의 물리 키로 같은 명령을 실행한다', () => {
+  for (const [letter, expected] of [['B', 'bold'], ['I', 'italic'], ['U', 'underline'], ['P', 'superscript'], ['S', 'subscript'], ['C', 'normal']] as const) {
+    for (const eventKey of [letter.toLowerCase(), 'Process', 'Ω'])
+      assert.equal(command({ key: eventKey, code: `Key${letter}`, altKey: true, shiftKey: true }, 'mac'), `format:${expected}`);
+  }
+  assert.equal(command({ key: 'c', ctrlKey: true, shiftKey: true }), 'format:align-center');
+  assert.equal(command({ key: 'i', ctrlKey: true, shiftKey: true }), 'format:indent');
+  assert.equal(command({ key: 'o', ctrlKey: true, shiftKey: true }), 'format:outdent');
+  assert.equal(command({ key: 'Insert', ctrlKey: true, shiftKey: true }), 'format:toggle-numbering');
+  assert.equal(command({ key: 'Delete', ctrlKey: true, shiftKey: true }), 'format:toggle-bullet');
+});
+
+test('문자표·바꾸기 별칭과 일반 문서 저장 단축키를 구분한다', () => {
+  assert.equal(command({ key: 'F10', ctrlKey: true }), 'insert:symbols');
+  assert.equal(command({ key: 'F10', altKey: true }), 'insert:symbols');
+  assert.equal(command({ key: 'h', ctrlKey: true }), 'edit:find-replace');
+  assert.equal(command({ key: 's', ctrlKey: true, shiftKey: true }), 'file:save-as');
 });

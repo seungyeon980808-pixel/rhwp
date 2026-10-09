@@ -3,6 +3,8 @@ import type { CommandRegistry } from './registry';
 import type { CommandServices, EditorContext } from './types';
 import { isUnsupportedLiveFormat, unsupportedLiveFormatReason } from '../embed/collaboration-format-boundary.ts';
 import { isUnsupportedLiveStructure, unsupportedLiveStructureReason } from '../embed/collaboration-structure-boundary.ts';
+import { resolveFormatCopyCommand } from './format-paste-availability.ts';
+import { requiresDocumentCheckpoint } from '../embed/document-checkpoint-command.ts';
 
 const FORM_MODE_BLOCKED_IDS = new Set([
   'edit:cut',
@@ -30,7 +32,6 @@ function isBlockedInFormMode(commandId: string, ctx: EditorContext): boolean {
 }
 
 /** 통합 커맨드 디스패처: 메뉴/툴바/키보드 모든 입력의 단일 실행 경로 */
-const documentTableCommand = (command: string) => command.startsWith('table:') && command !== 'table:transpose-copy';
 export class CommandDispatcher {
   private pendingDocumentCommand: { id: string; params?: Record<string, unknown> } | null = null;
   private pendingDocumentOperation: (() => void) | null = null;
@@ -70,6 +71,7 @@ export class CommandDispatcher {
    * @returns true: 실행됨, false: 미등록 또는 비활성
    */
   dispatch(commandId: string, params?: Record<string, unknown>): boolean {
+    commandId = resolveFormatCopyCommand(commandId, this.services.getContext());
     const def = this.registry.get(commandId);
     if (!def) {
       console.warn(`[CommandDispatcher] 미등록 커맨드: ${commandId}`);
@@ -83,7 +85,7 @@ export class CommandDispatcher {
     }
 
     const ctx = this.services.getContext();
-    if (ctx.isLiveCollaboration && ctx.canRequestDocumentEdit && documentTableCommand(commandId)) {
+    if (ctx.isLiveCollaboration && ctx.canRequestDocumentEdit && requiresDocumentCheckpoint(commandId)) {
       this.pendingDocumentCommand = { id: commandId, params };
       this.services.requestDocumentEdit?.(commandId, params);
       return false;
@@ -104,10 +106,12 @@ export class CommandDispatcher {
    * 메뉴/툴바의 enabled/disabled 상태 갱신에 사용.
    */
   isEnabled(commandId: string): boolean {
+    commandId = resolveFormatCopyCommand(commandId, this.services.getContext());
     return this.registry.get(commandId) !== undefined && this.disabledReason(commandId) === undefined;
   }
 
   disabledReason(commandId: string): string | undefined {
+    commandId = resolveFormatCopyCommand(commandId, this.services.getContext());
     const def = this.registry.get(commandId);
     if (!def) return '지원하지 않는 명령입니다.';
     const ctx = this.services.getContext();
@@ -118,13 +122,17 @@ export class CommandDispatcher {
         return '현재 편집 중인 표만 수정할 수 있습니다. 변경을 저장한 뒤 다른 영역을 선택하세요.';
     }
     if (ctx.isDocumentEditFrozen) return '문서 저장 또는 연결 확인이 끝나면 편집할 수 있습니다.';
-    if (this.services.wasm?.hasRestrictedPromptSpaces?.() && commandId.startsWith('format:align-'))
-      return '담당 구간을 나눈 문단의 정렬은 변경할 수 없습니다.';
+    if (this.services.wasm?.hasRestrictedPromptSpaces?.() && (commandId.startsWith('format:align-')
+      || commandId.startsWith('format:line-spacing') || commandId === 'format:indent' || commandId === 'format:outdent'))
+      return '담당 구간을 나눈 문단의 정렬·줄 간격·들여쓰기는 문서 소유자가 변경할 수 있습니다.';
     if (isBlockedInFormMode(commandId, ctx)) return '양식 입력 모드에서는 이 명령을 사용할 수 없습니다.';
-    if (isUnsupportedLiveFormat(commandId, ctx.isLiveCollaboration === true && !(ctx.canRequestDocumentEdit && documentTableCommand(commandId)))) return unsupportedLiveFormatReason;
+    const checkpoint = ctx.isLiveCollaboration === true && requiresDocumentCheckpoint(commandId);
+    if (checkpoint && !ctx.canRequestDocumentEdit)
+      return '문서 구조와 전체 서식은 문서 소유자가 변경할 수 있습니다. 글자 정렬·크기·강조·첨자 등은 담당 영역에서 사용할 수 있습니다.';
+    if (isUnsupportedLiveFormat(commandId, ctx.isLiveCollaboration === true && !(ctx.canRequestDocumentEdit && checkpoint))) return unsupportedLiveFormatReason;
     if (isUnsupportedLiveStructure(commandId, ctx.isLiveCollaboration === true && !ctx.canRequestDocumentEdit)) return unsupportedLiveStructureReason;
     if (def.canExecute && !def.canExecute(ctx)) return '이 명령을 사용할 수 있는 문서 영역을 먼저 선택하세요.';
-    if (ctx.isLiveCollaboration && !(ctx.canRequestDocumentEdit && documentTableCommand(commandId)) && (commandId.startsWith('format:') || commandId.startsWith('insert:')
+    if (ctx.isLiveCollaboration && !(ctx.canRequestDocumentEdit && checkpoint) && (commandId.startsWith('format:') || commandId.startsWith('insert:')
       || commandId.startsWith('table:') && commandId !== 'table:transpose-copy')
       && this.services.getInputHandler?.()?.canEditLiveSelection?.() === false)
       return '선택한 영역을 편집할 수 없습니다. 담당 범위와 다른 참여자의 작성 상태를 확인하세요.';

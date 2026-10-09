@@ -67,6 +67,7 @@ import { getCollaborationRegionRects } from '@/embed/collaboration-region-geomet
 import { readCollaborationPresence } from '@/embed/collaboration-presence';
 import { CollaborationLiveAdapter } from '@/embed/collaboration-live-adapter';
 import { installLiveFormatBoundary } from '@/embed/collaboration-format-boundary';
+import { requiresDocumentCheckpoint } from '@/embed/document-checkpoint-command';
 import { isUnsupportedLiveStructure, installLiveStructureBoundary } from '@/embed/collaboration-structure-boundary';
 import { CollaborationBodyHost } from '@/embed/collaboration-body-host';
 import { BodyStructureNativeError } from '@/embed/collaboration-body-structure';
@@ -1733,7 +1734,7 @@ installEmbedRuntime({
       // No text/structure operation is emitted during a full-document transaction.
       if (mode.exclusive) wasm.setLivePastePolicy({ epoch: wasm.getLivePasteEpoch() ?? 'exclusive-document', writableRegionIds: [], promptPolicy: { memberId: null, spaces: [], texts: [] } });
       for (const element of document.querySelectorAll('[data-cmd]')) {
-        if (!(element.getAttribute('data-cmd') ?? '').startsWith('table:')) continue;
+        if (!requiresDocumentCheckpoint(element.getAttribute('data-cmd') ?? '')) continue;
         element.removeAttribute('aria-disabled'); element.removeAttribute('aria-description'); element.removeAttribute('title');
         if (element instanceof HTMLButtonElement) element.disabled = false;
       }
@@ -1746,11 +1747,12 @@ installEmbedRuntime({
     },
     async executeWritingCommand(command) {
       await initPromise;
-      if (command.startsWith('table:') && !exclusiveDocumentEdit) return false;
+      if (requiresDocumentCheckpoint(command) && !exclusiveDocumentEdit) return false;
       if (!collaborationActive || !inputHandler?.canEditLiveSelection()
-        || wasm.hasRestrictedPromptSpaces() && command.startsWith('format:align-')) return false;
+        || wasm.hasRestrictedPromptSpaces() && (command.startsWith('format:align-')
+          || command.startsWith('format:line-spacing') || command === 'format:indent' || command === 'format:outdent')) return false;
       if (command === 'table:pending-resize') return dispatcher.resumePendingDocumentOperation();
-      if (command.startsWith('table:') && exclusiveDocumentEdit) return dispatcher.resumePendingDocumentCommand(command) || dispatcher.dispatch(command);
+      if (requiresDocumentCheckpoint(command) && exclusiveDocumentEdit) return dispatcher.resumePendingDocumentCommand(command) || dispatcher.dispatch(command);
       return dispatcher.dispatch(command);
     },
     async focusWritingSpace(regionId, offset) {

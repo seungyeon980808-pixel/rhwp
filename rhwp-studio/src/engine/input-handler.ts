@@ -2101,8 +2101,19 @@ export class InputHandler {
     return this.wasm.getCharPropertiesAt(pos.sectionIndex, pos.paragraphIndex, queryOffset);
   }
 
+  private isRestrictedPromptParagraphFormat(): boolean {
+    return this.wasm.isLiveStructureRestricted?.() === true && this.wasm.hasRestrictedPromptSpaces?.() === true;
+  }
+
+  private blockRestrictedPromptParagraphFormat(): boolean {
+    if (!this.isRestrictedPromptParagraphFormat()) return false;
+    this.eventBus.emit('command-blocked', '담당 구간을 나눈 문단의 정렬·줄 간격·들여쓰기는 문서 소유자가 변경할 수 있습니다.');
+    return true;
+  }
+
   /** 커서 위치 문단에 문단 서식을 적용한다 */
   private applyParaFormat(props: Record<string, unknown>): void {
+    if (this.blockRestrictedPromptParagraphFormat()) return;
     try {
       if (this.applyParaFormatInNoteOrHeader(props)) return;
       const targets = this.getParaFormatTargetsAtCursor();
@@ -2190,6 +2201,7 @@ export class InputHandler {
   }
 
   private executeParaFormatCommand(targets: ParaFormatTarget[], props: Record<string, unknown>): boolean {
+    if (this.blockRestrictedPromptParagraphFormat()) return false;
     if (targets.length === 0) {
       console.info('[InputHandler] 문단 서식 Undo/Redo: unsupported context');
       return false;
@@ -2506,6 +2518,7 @@ export class InputHandler {
 
   /** Undo 처리 */
   private handleUndo(): void {
+    if (!this.canUndo()) return;
     this.flushDeferredPaginationIfNeeded('before-undo', false);
     const newPos = this.history.undo(this.wasm);
     if (newPos) {
@@ -2520,7 +2533,7 @@ export class InputHandler {
 
   /** 임베드 호스트가 키보드와 동일한 정상 Undo 경로로 최상위 편집 한 건만 되돌린다. */
   undoFromHost(): EmbedHistoryUndoResultV1 {
-    if (!this.history.canUndo()) return { ok: false, reason: 'empty-history' };
+    if (!this.canUndo()) return { ok: false, reason: 'empty-history' };
     try {
       this.handleUndo();
       return { ok: true };
@@ -2531,6 +2544,7 @@ export class InputHandler {
 
   /** Redo 처리 */
   private handleRedo(): void {
+    if (!this.canRedo()) return;
     this.flushDeferredPaginationIfNeeded('before-redo', false);
     const newPos = this.history.redo(this.wasm);
     if (newPos) {
@@ -2660,6 +2674,10 @@ export class InputHandler {
   }
 
   private executeAllowedOperation(desc: OperationDescriptor): void {
+    // Paragraph properties affect text beyond a granted prompt interval. Guard the
+    // mutation router too: toolbar/dialog callers can bypass command dispatch.
+    const operationType = desc.kind === 'snapshot' ? desc.operationType : desc.command.type;
+    if (operationType.startsWith('applyParaFormat') && this.blockRestrictedPromptParagraphFormat()) return;
     if (!this.isOperationAllowedInEditMode(desc)) return;
     switch (desc.kind) {
       case 'command': {
@@ -3062,6 +3080,7 @@ export class InputHandler {
    *                   결함 차단 영역. (Task #779)
    */
   private updateCaret(skipScroll: boolean = false): void {
+    this.syncLiveHistoryScope();
     const rect = this.cursor.getRect();
     if (rect) {
       const zoom = this.viewportManager.getZoom();
@@ -4096,6 +4115,9 @@ export class InputHandler {
   isCompositionActive(): boolean { return this.isComposing; }
 
   applyRemoteTextChange(change: CollaborationTextChange): void {
+    // Snapshot history predates the remote mutation and must never restore over it.
+    this.history.clear(this.wasm);
+    this.liveHistoryScope = undefined;
     const state = this.getBodyStructureInput();
     if (!state) return;
     const remap = (position: DocumentPosition) => remapCollaborationTextPosition(position, change);
@@ -4706,11 +4728,35 @@ export class InputHandler {
     this.updateCaret();
   }
 
+  private liveHistoryScope: string | null | undefined;
+
+  /** Native history is intentionally local to one writable live region and epoch. */
+  private syncLiveHistoryScope(): boolean {
+    if (!this.wasm.isLiveStructureRestricted?.()) {
+      if (this.liveHistoryScope !== undefined) this.history.clear(this.wasm);
+      this.liveHistoryScope = undefined;
+      return true;
+    }
+    const pos = this.cursor.getPosition();
+    const selection = this.cursor.getSelectionOrdered();
+    const regions = collaborationEditRegions(selection?.start ?? pos, selection?.end ?? pos);
+    const block = this.getSelectedCellBlock();
+    const supported = !this.wasm.hasRestrictedPromptSpaces?.()
+      && !this.cursor.isInHeaderFooter() && !this.cursor.isInFootnote()
+      && !this.cursor.isInPictureObjectSelection() && !this.cursor.isInTableObjectSelection()
+      && (!block || block.cellIndices.length === 1) && regions?.length === 1;
+    const epoch = this.wasm.getLivePasteEpoch?.();
+    const scope = supported && epoch ? `${epoch}|${regions![0]}` : null;
+    if (scope !== this.liveHistoryScope || scope === null) this.history.clear(this.wasm);
+    this.liveHistoryScope = scope;
+    return scope !== null && this.canEditLiveSelection();
+  }
+
   /** Undo 가능한가? */
-  canUndo(): boolean { return this.history.canUndo(); }
+  canUndo(): boolean { return this.syncLiveHistoryScope() && this.history.canUndo(); }
 
   /** Redo 가능한가? */
-  canRedo(): boolean { return this.history.canRedo(); }
+  canRedo(): boolean { return this.syncLiveHistoryScope() && this.history.canRedo(); }
 
   /** Undo 실행 (커맨드 시스템용) */
   performUndo(): void { this.handleUndo(); }

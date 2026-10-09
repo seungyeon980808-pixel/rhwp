@@ -1,8 +1,9 @@
-const supportedCommands = new Set(['format:bold', 'format:italic', 'format:underline',
+const supportedCommands = new Set(['format:superscript', 'format:subscript', 'format:normal', 'format:strikethrough',
+  'format:indent', 'format:outdent', 'format:line-spacing', 'format:line-spacing-increase', 'format:line-spacing-decrease', 'format:bold', 'format:italic', 'format:underline',
   'format:font-size-increase', 'format:font-size-decrease', 'format:char-spacing-increase', 'format:char-spacing-decrease',
   'format:char-ratio-increase', 'format:char-ratio-decrease', 'format:align-left',
   'format:align-center', 'format:align-right', 'format:align-justify', 'format:align-distribute', 'format:align-split']);
-export const unsupportedLiveFormatReason = '이 서식은 아직 공동 작성에 지원되지 않습니다. 굵게·기울임·밑줄·글자 색·크기·자간·장평·문단 정렬을 사용할 수 있습니다.';
+export const unsupportedLiveFormatReason = '이 서식은 아직 공동 작성에 지원되지 않습니다. 기본 글자 서식·첨자·색·크기·자간·장평·정렬·줄 간격·들여쓰기를 사용할 수 있습니다.';
 const unsupportedCommands = new Set(['edit:format-paste', 'table:cell-props', 'table:border-each', 'table:border-one']);
 
 export function isUnsupportedLiveFormat(command: string, live: boolean): boolean {
@@ -10,8 +11,7 @@ export function isUnsupportedLiveFormat(command: string, live: boolean): boolean
 }
 
 export function installLiveFormatBoundary(document: Document): void {
-  const selectors = ['#style-name', '#font-name', '#font-lang', '#btn-strike',
-    '#btn-highlight', '#btn-charfx', '#linespacing-select', '#btn-ls-up', '#btn-ls-down'];
+  const selectors = ['#style-name', '#font-name', '#font-lang', '#btn-charfx'];
   const selector = selectors.join(',');
   const controls = [...document.querySelectorAll(selector), ...[...document.querySelectorAll('[data-cmd]')]
     .filter((element) => isUnsupportedLiveFormat(element.getAttribute('data-cmd') ?? '', true))];

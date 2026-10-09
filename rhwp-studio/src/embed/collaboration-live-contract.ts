@@ -9,8 +9,10 @@ export type CollaborationFormatOpV1 = Readonly<{
   type: 'format'; version: 1; offset: number; count: number;
 }> & (
   | Readonly<{ scope: 'character'; marks: Readonly<{ bold?: boolean; italic?: boolean; underline?: boolean;
-    textColor?: string; fontSize?: number; ratios?: number[]; spacings?: number[] }> }>
-  | Readonly<{ scope: 'paragraph'; marks: Readonly<{ alignment: string }> }>
+    textColor?: string; shadeColor?: string; fontSize?: number; ratios?: number[]; spacings?: number[];
+    superscript?: boolean; subscript?: boolean; strikethrough?: boolean; emboss?: boolean; engrave?: boolean;
+    outlineType?: number; shadowType?: number; underlineType?: string }> }>
+  | Readonly<{ scope: 'paragraph'; marks: Readonly<{ alignment?: string; lineSpacing?: number; lineSpacingType?: string; indent?: number }> }>
 );
 
 export interface CollaborationApplyOpsRequestV1 {

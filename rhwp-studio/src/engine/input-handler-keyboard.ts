@@ -432,6 +432,24 @@ const chordMapG: Record<string, string> = {
  */
 export function onKeyDown(this: any, e: KeyboardEvent): void {
   if (!this.active) return;
+  // Safari can mark a non-composing Korean shortcut as Process/229. Normalize
+  // only physical shortcut keys, then use the same context/permission routing
+  // as English input. Bind native Event methods to preserve preventDefault.
+  if (e.keyCode === 229 && !e.isComposing && this.isComposing === false
+    && (e.ctrlKey || e.metaKey || e.altKey || (e.shiftKey && e.code === 'Escape') || /^F\d{1,2}$/.test(e.code))) {
+    const physicalKey = /^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase()
+      : /^(Enter|NumpadEnter|Backspace|Delete|Insert|Escape|Tab|Home|End|PageUp|PageDown|ArrowLeft|ArrowRight|ArrowUp|ArrowDown|F\d{1,2})$/.test(e.code)
+        ? (e.code === 'NumpadEnter' ? 'Enter' : e.code) : null;
+    if (physicalKey) e = new Proxy(e, {
+      get(target, property) {
+        if (property === 'key') return physicalKey;
+        if (property === 'keyCode') return 0;
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  }
+
   // 코드 단축키의 수정자 keydown은 두 번째 문자로 소비하지 않는다. 오래된 접두사는 일반 입력을 보호한다.
   if (this._equationChordUntil) {
     if (Date.now() > this._equationChordUntil || e.key === 'Escape') {
@@ -553,26 +571,36 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     return;
   }
 
-  // 셀 선택에서는 IME가 문자 조합을 시작하기 전에 M/S를 명령으로 소비한다.
+  if (this.cursor.isInCellSelectionMode() && !this.isComposing
+    && (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey
+    && (e.code === 'KeyS' || ['s', 'ㄴ'].includes(e.key.toLowerCase()))) {
+    e.preventDefault();
+    this.dispatcher?.dispatch('table:block-sum');
+    return;
+  }
+
+  // 셀 선택에서는 IME가 문자 조합을 시작하기 전에 표 단축키를 명령으로 소비한다.
   if (this.cursor.isInCellSelectionMode() && !e.ctrlKey && !e.metaKey && !e.altKey) {
     const letter = /^Key[A-Z]$/.test(e.code ?? '') ? e.code.slice(3).toLowerCase() : e.key.toLowerCase();
-    if (letter === 'm' || letter === 'ㅡ' || letter === 's' || letter === 'ㄴ') {
-      e.preventDefault(); this.dispatcher?.dispatch(letter === 'm' || letter === 'ㅡ' ? 'table:cell-merge' : 'table:cell-split'); return;
+    const cellCommands: Record<string, string> = {
+      m: 'table:cell-merge', 'ㅡ': 'table:cell-merge',
+      s: 'table:cell-split', 'ㄴ': 'table:cell-split',
+      w: 'table:cell-width-equal', 'ㅈ': 'table:cell-width-equal',
+      h: 'table:cell-height-equal', 'ㅗ': 'table:cell-height-equal',
+      p: 'table:cell-props', 'ㅔ': 'table:cell-props',
+      l: 'table:border-each', 'ㅣ': 'table:border-each',
+      c: 'table:border-each', 'ㅊ': 'table:border-each',
+    };
+    const command = cellCommands[letter];
+    if (command) {
+      e.preventDefault();
+      this.dispatcher?.dispatch(command, letter === 'c' || letter === 'ㅊ' ? { initialTab: 'background' } : undefined);
+      return;
     }
   }
 
   // IME 조합 중 처리 (한국어 IME에서 e.key는 항상 'Process'이므로 e.code로 판별)
   if (e.isComposing || e.keyCode === 229) {
-    // Safari의 한글 입력기는 조합 중이 아닌 Ctrl/Option 키에도 229를 준다.
-    // 실제 조합은 보호하고, 편집기의 조합 상태가 꺼진 경우에만 서식 명령을 전달한다.
-    if (this.isComposing === false && (e.ctrlKey || e.metaKey || e.altKey)
-      && !this.cursor.isInHeaderFooter() && !this.cursor.isInFootnote()
-      && !this.cursor.isInPictureObjectSelection() && !this.cursor.isInTableObjectSelection()) {
-      const command = matchShortcut(e, defaultShortcuts);
-      if (command?.startsWith('format:') && this.dispatcher) {
-        e.preventDefault(); this.dispatcher.dispatch(command); return;
-      }
-    }
     // [PR #786 후속] Ctrl+M chord 1번째/2번째 키 영역 영역 IME 합성 중 영역 영역도 활성화.
     // 한글 IME 영역 영역 e.key === 'Process' 영역 영역, e.code (KeyM/KeyN/KeyS/KeyF/KeyK 등) 영역 영역 판별.
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey
@@ -1098,8 +1126,32 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     return;
   }
 
+  // 표 안에서는 한글의 줄 삽입/삭제가 본문의 쪽 나누기/단어 삭제보다 우선한다.
+  // dispatcher를 거쳐 현재 공동 편집 권한과 구조 변경 잠금을 그대로 적용한다.
+  if (this.cursor.isInCell() && !this.cursor.isInTextBox?.() && e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
+    && (e.key === 'Enter' || e.key === 'Backspace')) {
+    e.preventDefault();
+    this.dispatcher?.dispatch(e.key === 'Enter' ? 'table:insert-row-below' : 'table:delete-row');
+    return;
+  }
+  if (this.cursor.isInCell() && e.key === 'Escape' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault();
+    this.cursor.exitCellSelectionMode();
+    this.cellSelectionRenderer?.clear();
+    if (this.cursor.enterTableObjectSelection()) this.cursor.moveOutOfSelectedTable();
+    this.selectionRenderer.clear();
+    this.updateCaret();
+    return;
+  }
+
   // ─── 셀 선택 모드 중 키 처리 ────────────────────────────
   if (this.cursor.isInCellSelectionMode()) {
+    if ((e.key === 'F7' || e.key === 'F8') && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      this.cursor.selectCellAxis(e.key === 'F7' ? 'column' : 'row');
+      this.updateCellSelection();
+      return;
+    }
     if (e.key === 'Escape' || e.key === 'Enter') {
       e.preventDefault();
       // F5 셀 선택 모드 → 마지막 선택 셀의 편집 상태

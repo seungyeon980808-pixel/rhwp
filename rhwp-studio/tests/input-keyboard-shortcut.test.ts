@@ -17,11 +17,11 @@ registerHooks({
 });
 const { onKeyDown, handleCtrlKey } = await import('../src/engine/input-handler-keyboard.ts');
 
-function keyEvent(key: string, options: { code?: string; ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean; isComposing?: boolean } = {}): KeyboardEvent {
+function keyEvent(key: string, options: { code?: string; ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean; altKey?: boolean; isComposing?: boolean } = {}): KeyboardEvent {
   return Object.assign(new Event('keydown', { cancelable: true }), {
     key, code: options.code ?? 'KeyP',
     ctrlKey: options.ctrlKey ?? false, isComposing: options.isComposing ?? false,
-    altKey: false, shiftKey: options.shiftKey ?? false, metaKey: options.metaKey ?? false, repeat: false,
+    altKey: options.altKey ?? false, shiftKey: options.shiftKey ?? false, metaKey: options.metaKey ?? false, repeat: false,
     keyCode: 0, charCode: 0, which: 0, location: 0, detail: 0, view: null,
     DOM_KEY_LOCATION_STANDARD: 0 as const, DOM_KEY_LOCATION_LEFT: 1 as const,
     DOM_KEY_LOCATION_RIGHT: 2 as const, DOM_KEY_LOCATION_NUMPAD: 3 as const,
@@ -35,6 +35,7 @@ function handler(accepted: boolean, picture = false) {
   const dispatched: string[] = [];
   return {
     active: true,
+    flushDeferredPaginationIfNeeded() {},
     isComposing: false,
     cursor: {
       isInHeaderFooter: () => false,
@@ -210,3 +211,167 @@ for (const key of ['z', 'ㅋ']) {
     assert.deepEqual(editor.dispatched, []);
   });
 }
+
+for (const [key, code, command] of [
+  ['ㅈ', 'KeyW', 'table:cell-width-equal'], ['ㅗ', 'KeyH', 'table:cell-height-equal'],
+  ['ㅔ', 'KeyP', 'table:cell-props'], ['ㅣ', 'KeyL', 'table:border-each'], ['ㅊ', 'KeyC', 'table:border-each'],
+] as const) {
+  test(`F5 ${code} routes Korean/Process keys through the dispatcher`, () => {
+    const { editor, phase } = cells();
+    onKeyDown.call(editor, keyEvent('F5', { code: 'F5' }));
+    for (const text of [key, 'Process']) {
+      const event = keyEvent(text, { code, isComposing: text === 'Process' });
+      onKeyDown.call(editor, event);
+      assert.equal(event.defaultPrevented, true);
+      assert.equal(editor.dispatched.at(-1), command);
+      assert.equal(phase(), 1);
+    }
+  });
+  test(`ordinary ${code} is available to typing outside F5`, () => {
+    const editor = handler(false);
+    const event = keyEvent(key, { code });
+    onKeyDown.call(editor, event);
+    assert.equal(event.defaultPrevented, false);
+  });
+}
+
+test('C opens background while L opens borders without creating a new mutation path', () => {
+  const { editor } = cells(); const dispatched: unknown[] = [];
+  editor.dispatcher.dispatch = (...args: unknown[]) => { dispatched.push(args); return true; };
+  onKeyDown.call(editor, keyEvent('F5', { code: 'F5' }));
+  onKeyDown.call(editor, keyEvent('c', { code: 'KeyC' }));
+  onKeyDown.call(editor, keyEvent('l', { code: 'KeyL' }));
+  assert.deepEqual(dispatched, [['table:border-each', { initialTab: 'background' }], ['table:border-each', undefined]]);
+});
+
+test('F5 F7/F8 select column/row without opening page setup', () => {
+  const { editor, phase } = cells(); const axes: string[] = [];
+  editor.cursor.selectCellAxis = (axis: string) => axes.push(axis);
+  onKeyDown.call(editor, keyEvent('F5', { code: 'F5' }));
+  for (const key of ['F7', 'F8']) {
+    const event = keyEvent(key, { code: key }); onKeyDown.call(editor, event);
+    assert.equal(event.defaultPrevented, true);
+  }
+  assert.deepEqual(axes, ['column', 'row']); assert.deepEqual(editor.dispatched, []); assert.equal(phase(), 1);
+});
+
+test('Ctrl Enter/Backspace in a cell use guarded table commands, even when dispatch rejects them', () => {
+  const { editor } = cells();
+  editor.dispatcher.isEnabled = () => false;
+  editor.dispatcher.dispatch = (command: string) => { editor.dispatched.push(command); return false; };
+  for (const [key, command] of [['Enter', 'table:insert-row-below'], ['Backspace', 'table:delete-row']]) {
+    const event = keyEvent(key, { code: key, ctrlKey: true });
+    onKeyDown.call(editor, event);
+    assert.equal(event.defaultPrevented, true); assert.equal(editor.dispatched.at(-1), command);
+  }
+});
+
+test('Ctrl Enter in body retains page break', () => {
+  const editor = handler(true); const event = keyEvent('Enter', { code: 'Enter', ctrlKey: true });
+  onKeyDown.call(editor, event);
+  assert.deepEqual(editor.dispatched, ['page:break']); assert.equal(event.defaultPrevented, true);
+});
+
+const { CursorState } = await import('../src/engine/cursor.ts');
+for (const axis of ['row', 'column'] as const) {
+  test(`actual CursorState expands ${axis} selection within current nested table dimensions`, () => {
+    const cursor = new CursorState({} as any) as any;
+    cursor._cellSelectionMode = true;
+    cursor.cellAnchor = { row: 2, col: 1 }; cursor.cellFocus = { row: 1, col: 2 };
+    cursor.cellTableCtx = { sec: 0, ppi: 4, ci: 3, rowCount: 5, colCount: 4, cellPath: [{ controlIndex: 3, cellIndex: 1 }, { controlIndex: 2, cellIndex: 2 }] };
+    cursor.excludedCells.add('1:1');
+    cursor.selectCellAxis(axis);
+    assert.deepEqual(cursor.getSelectedCellRange(), axis === 'row'
+      ? { startRow: 1, endRow: 2, startCol: 0, endCol: 3 }
+      : { startRow: 0, endRow: 4, startCol: 1, endCol: 2 });
+    assert.equal(cursor.getCellSelectionPhase(), 2); assert.equal(cursor.getExcludedCells().size, 0);
+  });
+}
+
+const { CellSplitDialog } = await import('../src/ui/cell-split-dialog.ts');
+test('split dialog cancellation restores focus once on every close path', () => {
+  const dialog = new CellSplitDialog(false) as any;
+  let restored = 0;
+  const overlay = { isConnected: true, remove() { this.isConnected = false; } };
+  dialog.overlay = overlay; dialog.afterClose = () => { restored += 1; };
+  dialog.hide(); dialog.hide();
+  assert.equal(restored, 1); assert.equal(overlay.isConnected, false);
+});
+
+test('Shift Escape leaves the innermost table and removes the cell block', () => {
+  const { editor, phase } = cells(); const calls: string[] = [];
+  editor.cursor.enterTableObjectSelection = () => { calls.push('select-inner-table'); return true; };
+  editor.cursor.moveOutOfSelectedTable = () => calls.push('move-to-parent');
+  onKeyDown.call(editor, keyEvent('F5', { code: 'F5' }));
+  const event = keyEvent('Escape', { code: 'Escape', shiftKey: true });
+  onKeyDown.call(editor, event);
+  assert.equal(event.defaultPrevented, true); assert.equal(phase(), 0);
+  assert.deepEqual(calls, ['select-inner-table', 'move-to-parent']);
+});
+
+test('selected-cell Ctrl Shift S calculates sum before global save-as, including Safari Korean 229', () => {
+  const { editor } = cells();
+  onKeyDown.call(editor, keyEvent('F5', { code: 'F5' }));
+  const event = Object.assign(keyEvent('Process', { code: 'KeyS', ctrlKey: true, shiftKey: true }), { keyCode: 229 });
+  onKeyDown.call(editor, event);
+  assert.equal(event.defaultPrevented, true);
+  assert.deepEqual(editor.dispatched, ['table:block-sum']);
+  const body = handler(true);
+  onKeyDown.call(body, keyEvent('s', { code: 'KeyS', ctrlKey: true, shiftKey: true }));
+  assert.deepEqual(body.dispatched, ['file:save-as']);
+});
+
+for (const [code, modifiers, command] of [
+  ['Enter', { ctrlKey: true }, 'table:insert-row-below'],
+  ['Backspace', { ctrlKey: true }, 'table:delete-row'],
+  ['Insert', { altKey: true }, 'table:insert-row-col'],
+  ['Delete', { altKey: true }, 'table:delete-row-col'],
+  ['KeyZ', { ctrlKey: true }, 'edit:undo'],
+  ['KeyZ', { ctrlKey: true, shiftKey: true }, 'edit:redo'],
+  ['KeyH', { ctrlKey: true }, 'edit:find-replace'],
+  ['F10', { ctrlKey: true }, 'insert:symbols'],
+] as const) {
+  test(`inactive Korean Process/229 ${code} follows ordinary table/editor command routing`, () => {
+    const { editor } = cells();
+    const event = Object.assign(keyEvent('Process', { code, ...modifiers }), { keyCode: 229 });
+    onKeyDown.call(editor, event);
+    assert.equal(event.defaultPrevented, true);
+    assert.deepEqual(editor.dispatched, [command]);
+  });
+  test(`actual Korean composition preserves ${code} without shortcut dispatch`, () => {
+    const { editor } = cells(); editor.isComposing = true;
+    const event = Object.assign(keyEvent('Process', { code, ...modifiers, isComposing: true }), { keyCode: 229 });
+    onKeyDown.call(editor, event);
+    assert.equal(event.defaultPrevented, false); assert.deepEqual(editor.dispatched, []);
+  });
+}
+
+test('inactive Korean Process Ctrl Enter in body still inserts page break', () => {
+  const editor = handler(true);
+  const event = Object.assign(keyEvent('Process', { code: 'Enter', ctrlKey: true }), { keyCode: 229 });
+  onKeyDown.call(editor, event);
+  assert.equal(event.defaultPrevented, true); assert.deepEqual(editor.dispatched, ['page:break']);
+});
+
+test('inactive Korean Process Shift Escape leaves table while an ordinary Process letter is untouched', () => {
+  const { editor } = cells(); const calls: string[] = [];
+  editor.cursor.enterTableObjectSelection = () => true;
+  editor.cursor.moveOutOfSelectedTable = () => calls.push('leave');
+  const escape = Object.assign(keyEvent('Process', { code: 'Escape', shiftKey: true }), { keyCode: 229 });
+  onKeyDown.call(editor, escape);
+  assert.deepEqual(calls, ['leave']); assert.equal(escape.defaultPrevented, true);
+  const ordinary = Object.assign(keyEvent('Process', { code: 'KeyW' }), { keyCode: 229 });
+  onKeyDown.call(editor, ordinary);
+  assert.equal(ordinary.defaultPrevented, false); assert.deepEqual(editor.dispatched, []);
+});
+
+test('event composition signal wins over inactive handler and inactive editor does not consume 229 shortcuts', () => {
+  const editor = handler(true);
+  const composing = Object.assign(keyEvent('Process', { code: 'KeyB', ctrlKey: true, isComposing: true }), { keyCode: 229 });
+  onKeyDown.call(editor, composing);
+  assert.equal(composing.defaultPrevented, false); assert.deepEqual(editor.dispatched, []);
+  editor.active = false;
+  const inactive = Object.assign(keyEvent('Process', { code: 'KeyZ', ctrlKey: true }), { keyCode: 229 });
+  onKeyDown.call(editor, inactive);
+  assert.equal(inactive.defaultPrevented, false); assert.deepEqual(editor.dispatched, []);
+});

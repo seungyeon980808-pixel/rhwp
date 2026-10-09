@@ -1160,7 +1160,12 @@ fn document_structure_digest(document: &Document, cell_text_structure: bool) -> 
 
 fn hash_paragraphs(hasher: &mut Sha256, paragraphs: &[Paragraph], cell_text_structure: bool) {
     for paragraph in paragraphs {
-        hasher.update(paragraph.para_shape_id.to_le_bytes());
+        // Paragraph formatting is replayed independently during collaboration.
+        // Its allocated shape ID is not a structural address or topology change.
+        // Keep the stricter approved-template digest sensitive to that ID.
+        if !cell_text_structure {
+            hasher.update(paragraph.para_shape_id.to_le_bytes());
+        }
         hasher.update(paragraph.style_id.to_le_bytes());
         hash_usize(hasher, paragraph.controls.len());
         for control in &paragraph.controls {

@@ -1284,6 +1284,17 @@ export class CursorState {
     this.excludedCells.clear();
   }
 
+  /** F5 → F7/F8: 현재 선택 범위의 열/행 전체를 선택한다. */
+  selectCellAxis(axis: 'row' | 'column'): void {
+    const range = this.getSelectedCellRange();
+    if (!range || !this.cellTableCtx) return;
+    const { rowCount, colCount } = this.cellTableCtx;
+    this.cellAnchor = { row: axis === 'column' ? 0 : range.startRow, col: axis === 'row' ? 0 : range.startCol };
+    this.cellFocus = { row: axis === 'column' ? rowCount - 1 : range.endRow, col: axis === 'row' ? colCount - 1 : range.endCol };
+    this._cellSelectionPhase = 2;
+    this.excludedCells.clear();
+  }
+
   /** 범위 선택: anchor 고정, focus만 이동 (phase 2) */
   expandCellSelection(deltaRow: number, deltaCol: number): void {
     if (!this._cellSelectionMode || !this.cellFocus || !this.cellTableCtx) return;

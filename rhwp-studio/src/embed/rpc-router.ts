@@ -1,3 +1,4 @@
+import { writingCommandIds } from './writing-command-validation.ts';
 import type { HmlSaveState } from '../core/hml-save-capability.ts';
 import { CollaborationGeometryError, parseCollaborationGeometryRequest, type CollaborationRegionRectsV1, type CollaborationGeometryRequest } from './collaboration-region-geometry.ts';
 import type { CollaborationPresenceV1 } from './collaboration-presence.ts';
@@ -331,7 +332,7 @@ export async function routeEmbedRequest(
     }
     case 'executeWritingCommand': {
       if (!handlers.executeWritingCommand || typeof params.command !== 'string'
-        || (!['format:bold', 'format:italic', 'format:align-left', 'format:align-center', 'format:align-right', 'format:align-justify'].includes(params.command) && !/^table:[a-z-]+$/.test(params.command))) throw new TypeError('Invalid writing command');
+        || !writingCommandIds.has(params.command)) throw new TypeError('Invalid writing command');
       return handlers.executeWritingCommand(params.command);
     }
     case 'focusWritingSpace': {

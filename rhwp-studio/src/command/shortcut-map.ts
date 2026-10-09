@@ -43,6 +43,17 @@ export const defaultShortcuts: [ShortcutDef, string][] = [
   [{ key: 'b', ctrl: true }, 'format:bold'],
   [{ key: 'i', ctrl: true }, 'format:italic'],
   [{ key: 'u', ctrl: true }, 'format:underline'],
+  [{ key: 'b', alt: true, shift: true }, 'format:bold'],
+  [{ key: 'i', alt: true, shift: true }, 'format:italic'],
+  [{ key: 'u', alt: true, shift: true }, 'format:underline'],
+  [{ key: 'p', alt: true, shift: true }, 'format:superscript'],
+  [{ key: 's', alt: true, shift: true }, 'format:subscript'],
+  [{ key: 'c', alt: true, shift: true }, 'format:normal'],
+  [{ key: 'ㅊ', alt: true, shift: true }, 'format:normal'],
+  [{ key: 'i', ctrl: true, shift: true }, 'format:indent'],
+  [{ key: 'o', ctrl: true, shift: true }, 'format:outdent'],
+  [{ key: 'insert', ctrl: true, shift: true }, 'format:toggle-numbering'],
+  [{ key: 'delete', ctrl: true, shift: true }, 'format:toggle-bullet'],
   [{ key: 'l', alt: true }, 'format:char-shape'],
   [{ key: 'ㄹ', alt: true }, 'format:char-shape'],
   [{ key: 't', alt: true }, 'format:para-shape'],
@@ -68,6 +79,7 @@ export const defaultShortcuts: [ShortcutDef, string][] = [
   // 검색
   [{ key: 'f', ctrl: true }, 'edit:find'],
   [{ key: 'f2', ctrl: true }, 'edit:find-replace'],
+  [{ key: 'h', ctrl: true }, 'edit:find-replace'],
   [{ key: 'l', ctrl: true }, 'edit:find-again'],
   [{ key: 'v', alt: true, shift: true }, 'edit:compare-documents'],
   [{ key: 'h', ctrl: true, shift: true }, 'edit:document-history'],
@@ -77,6 +89,7 @@ export const defaultShortcuts: [ShortcutDef, string][] = [
 
   // 입력
   [{ key: 'f10', alt: true }, 'insert:symbols'],
+  [{ key: 'f10', ctrl: true }, 'insert:symbols'],
 
   // 쪽
   [{ key: 'enter', ctrl: true }, 'page:break'],
@@ -119,15 +132,14 @@ export const defaultShortcuts: [ShortcutDef, string][] = [
   // Ctrl+Shift+T: 브라우저 탭복원 충돌 → Alt+Shift+T로 재매핑
   [{ key: 'h', alt: true, shift: true }, 'format:align-right'],   // 오른쪽 정렬 (재매핑, H=rigHt)
   [{ key: 'ㅗ', alt: true, shift: true }, 'format:align-right'],
-  [{ key: 'c', alt: true, shift: true }, 'format:align-center'],  // 가운데 정렬 (재매핑)
-  [{ key: 'ㅊ', alt: true, shift: true }, 'format:align-center'],
   [{ key: 'd', alt: true, shift: true }, 'format:align-distribute'], // 배분 정렬 (재매핑)
   [{ key: 'ㅇ', alt: true, shift: true }, 'format:align-distribute'],
 
   // 표
   [{ key: 'enter', alt: true }, 'table:insert-row-col'],
+  [{ key: 'insert', code: 'Insert', alt: true }, 'table:insert-row-col'],
   [{ key: 'delete', alt: true }, 'table:delete-row-col'],
-  [{ key: 's', ctrl: true, shift: true }, 'table:block-sum'],
+  // Ctrl+Shift+S is save-as here; cell-selection routing handles block sum first.
   [{ key: 'a', ctrl: true, shift: true }, 'table:block-avg'],
   [{ key: 'p', ctrl: true, shift: true }, 'table:block-product'],
 ];

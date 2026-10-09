@@ -12,3 +12,9 @@ export function canExecuteFormatPaste(ctx: FormatPasteContext): boolean {
     && !ctx.isFormMode
     && (ctx.hasSelection || ctx.inCellSelectionMode);
 }
+
+/** Alt+C copies at a caret, but applies the copied style to an existing target. */
+export function resolveFormatCopyCommand(command: string, ctx: Pick<EditorContext, 'hasCopiedFormat' | 'hasSelection' | 'inCellSelectionMode'>): string {
+  return command === 'edit:format-copy' && ctx.hasCopiedFormat && (ctx.hasSelection || ctx.inCellSelectionMode)
+    ? 'edit:format-paste' : command;
+}

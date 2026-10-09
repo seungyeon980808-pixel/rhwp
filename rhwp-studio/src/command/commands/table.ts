@@ -41,6 +41,13 @@ function tablePosition(ctx: { sec: number; ppi: number; ci: number; cellPath?: C
   return { sectionIndex: ctx.sec, paragraphIndex: 0, charOffset: 0, parentParaIndex: ctx.ppi, controlIndex: ctx.ci, cellPath: ctx.cellPath as DocumentPosition['cellPath'] };
 }
 
+function rejectNestedCellDialog(ih: NonNullable<ReturnType<CommandServices['getInputHandler']>>): boolean {
+  if ((ih.getCursorPosition().cellPath?.length ?? 0) < 2) return false;
+  window.alert('표 안의 표는 현재 셀 속성·테두리·배경 대화상자를 지원하지 않습니다. 바깥 표의 셀을 선택해 주세요.');
+  restoreEditorFocus(ih);
+  return true;
+}
+
 function safeTableOp(fn: () => void, label: string): void {
   try { fn(); } catch (e) {
     if (e instanceof UnsupportedLiveStructureError) window.alert(e.message);
@@ -296,12 +303,13 @@ export const tableCommands: CommandDef[] = [
     canExecute: (ctx) => ctx.inTable || ctx.inCellSelectionMode || ctx.inTableObjectSelection,
     execute(services) {
       const ih = services.getInputHandler();
-      if (!ih) return;
+      if (!ih || rejectNestedCellDialog(ih)) return;
       if (ih.isInTableObjectSelection()) {
         const ref = ih.getSelectedTableRef();
         if (!ref) return;
         const tableCtx = { sec: ref.sec, ppi: ref.ppi, ci: ref.ci };
         const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, 0, 'table', services);
+        dialog.afterClose = () => restoreEditorFocus(ih);
         dialog.show();
         return;
       }
@@ -310,6 +318,7 @@ export const tableCommands: CommandDef[] = [
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
       const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex };
       const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, pos.cellIndex, 'cell', services);
+      dialog.afterClose = () => restoreEditorFocus(ih);
       dialog.show();
     },
   },
@@ -317,9 +326,9 @@ export const tableCommands: CommandDef[] = [
     id: 'table:border-each',
     label: '각 셀마다 적용(E)...',
     canExecute: inTable,
-    execute(services) {
+    execute(services, params) {
       const ih = services.getInputHandler();
-      if (!ih) return;
+      if (!ih || rejectNestedCellDialog(ih)) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
       const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex };
@@ -333,7 +342,8 @@ export const tableCommands: CommandDef[] = [
         selectionRange,
         services,
       );
-      dialog.show();
+      dialog.afterClose = () => restoreEditorFocus(ih);
+      dialog.show(params?.initialTab === 'background' ? 'background' : 'border');
     },
   },
   {
@@ -342,7 +352,7 @@ export const tableCommands: CommandDef[] = [
     canExecute: hasMultiCellSelection,
     execute(services) {
       const ih = services.getInputHandler();
-      if (!ih) return;
+      if (!ih || rejectNestedCellDialog(ih)) return;
       if (!ih.hasMultiCellSelection()) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
@@ -528,6 +538,7 @@ export const tableCommands: CommandDef[] = [
       const isMerged = !isMultiCell && (cellInfo.rowSpan > 1 || cellInfo.colSpan > 1);
 
       const dialog = new CellSplitDialog(isMerged);
+      dialog.afterClose = () => restoreEditorFocus(ih);
       dialog.onApply = (nRows, mCols, equalHeight, mergeFirst) => {
         const ih2 = services.getInputHandler();
         if (!ih2) return;

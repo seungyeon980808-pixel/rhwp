@@ -19,7 +19,7 @@ test('length-changing remote cell edit moves the native caret and live compositi
     const cursor = new CursorState(wasm);
     const anchor = { sectionIndex: 0, paragraphIndex: 2, parentParaIndex: 2, controlIndex: 0, cellIndex: 0, cellParaIndex: 0, charOffset: 4 };
     cursor.moveTo({ ...anchor, charOffset: 5 });
-    const input = { cursor, isComposing: true, compositionAnchor: anchor, compositionLength: 1,
+    const input = { history: { clear() {} }, cursor, isComposing: true, compositionAnchor: anchor, compositionLength: 1,
       _iosAnchor: null, pendingCharShapeAnchor: null,
       getBodyStructureInput: () => ({ position: cursor.getPosition(), selection: null }),
       updateSelection() {}, updateCaret() {} };

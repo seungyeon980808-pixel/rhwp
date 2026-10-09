@@ -36,36 +36,36 @@ function context(isLiveCollaboration: boolean): EditorContext {
   };
 }
 
-function services(isLiveCollaboration: boolean) {
+function services(isLiveCollaboration: boolean, allowed = true, includeGuard = true) {
   const executed: string[] = [];
   const eventBus = new EventBus();
+  const current = context(isLiveCollaboration);
+  let guardAllowed = allowed;
+  const input = {
+    ...(includeGuard ? { canUndo: () => guardAllowed, canRedo: () => guardAllowed } : {}),
+    performUndo() { executed.push('undo'); }, performRedo() { executed.push('redo'); },
+  };
   const value: CommandServices = {
     eventBus, wasm: new WasmBridge(), documentState: new DocumentDirtyState(eventBus),
-    getContext: () => context(isLiveCollaboration),
-    getInputHandler: () => { executed.push('input-handler'); return null; },
+    getContext: () => current,
+    getInputHandler: () => input as unknown as ReturnType<CommandServices['getInputHandler']>,
     getViewportManager: () => null, gotoPage: () => false, setEditMode: () => {},
   };
-  return { value, executed };
+  return { value, executed, current, reject() { guardAllowed = false; } };
 }
 
 for (const id of ['edit:undo', 'edit:redo']) {
-  const command = editCommands.find((item) => item.id === id);
-  assert.ok(command);
+  const command = editCommands.find((item) => item.id === id)!;
+  const action = id.slice(5);
 
-  test(`${id} remains available in an ordinary document with history`, () => {
+  test(`${id} remains available in ordinary and guarded live documents with history`, () => {
     assert.equal(command.canExecute?.(context(false)), true);
+    assert.equal(command.canExecute?.(context(true)), true);
   });
 
-  test(`${id} is unavailable in live collaboration even with native history`, () => {
-    assert.equal(command.canExecute?.(context(true)), false);
-  });
-
-  test(`${id} stays unavailable without a document`, () => {
-    assert.equal(command.canExecute?.({ ...context(false), hasDocument: false }), false);
-  });
-
-  test(`${id} stays unavailable with empty native history`, () => {
-    assert.equal(command.canExecute?.({ ...context(false), canUndo: false, canRedo: false }), false);
+  test(`${id} stays unavailable without a document or guarded native history`, () => {
+    assert.equal(command.canExecute?.({ ...context(true), hasDocument: false }), false);
+    assert.equal(command.canExecute?.({ ...context(true), canUndo: false, canRedo: false }), false);
   });
 
   test(`${id} supports ordinary legacy contexts without a live-mode field`, () => {
@@ -73,18 +73,29 @@ for (const id of ['edit:undo', 'edit:redo']) {
     assert.equal(command.canExecute?.(ordinary), true);
   });
 
-  test(`${id} rejects direct execution in live collaboration`, () => {
+  test(`${id} directly executes live history only while the fresh handler guard permits it`, () => {
     const fixture = services(true);
+    command.execute(fixture.value);
+    assert.deepEqual(fixture.executed, [action]);
+    fixture.reject(); // Context may still advertise old availability after a remote edit/lock.
+    command.execute(fixture.value);
+    assert.deepEqual(fixture.executed, [action]);
+  });
+
+  test(`${id} fails closed if a handler does not expose the native history guard`, () => {
+    const fixture = services(true, true, false);
     command.execute(fixture.value);
     assert.deepEqual(fixture.executed, []);
   });
 
-  test(`${id} returns rejected through the live dispatcher`, () => {
+  test(`${id} dispatches guarded live history and rejects false availability`, () => {
     const fixture = services(true);
-    const registry = new CommandRegistry();
-    registry.register(command);
+    const registry = new CommandRegistry(); registry.register(command);
     const dispatcher = new CommandDispatcher(registry, fixture.value, fixture.value.eventBus);
+    assert.equal(dispatcher.dispatch(id), true);
+    assert.deepEqual(fixture.executed, [action]);
+    fixture.current.canUndo = false; fixture.current.canRedo = false;
     assert.equal(dispatcher.dispatch(id), false);
-    assert.deepEqual(fixture.executed, []);
+    assert.deepEqual(fixture.executed, [action]);
   });
 }

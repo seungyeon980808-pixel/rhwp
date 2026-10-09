@@ -149,7 +149,7 @@ export class CellBorderBgDialog extends ModalDialog {
     this.services = services;
   }
 
-  show(): void {
+  show(initialTab: 'border' | 'background' = 'border'): void {
     super.show();
     this.dialog.classList.add('tcp-border-bg-dialog');
     const { sec, ppi, ci } = this.tableCtx;
@@ -157,6 +157,7 @@ export class CellBorderBgDialog extends ModalDialog {
       ? this.wasm.getCellOwnProperties(sec, ppi, ci, this.cellIdx)
       : this.wasm.getCellProperties(sec, ppi, ci, this.cellIdx);
     this.populateFields();
+    this.switchTab(initialTab === 'background' ? 1 : 0);
   }
 
   protected createBody(): HTMLElement {

@@ -5,7 +5,7 @@ import { GotoDialog } from '@/ui/goto-dialog';
 import { HistoryDialog } from '@/ui/history-dialog';
 import { CompareDialog } from '@/ui/compare-dialog';
 import { CompareSessionStore } from '@/compare/session';
-import { canExecuteFormatPaste } from '../format-paste-availability';
+import { canExecuteFormatPaste, resolveFormatCopyCommand } from '../format-paste-availability';
 
 /** 검색 대화상자 싱글톤 — 열려 있으면 재사용 */
 let findDialogInstance: FindDialog | null = null;
@@ -22,10 +22,12 @@ export const editCommands: CommandDef[] = [
     label: '되돌리기',
     icon: 'icon-undo',
     shortcutLabel: 'Ctrl+Z',
-    canExecute: (ctx) => ctx.hasDocument && ctx.canUndo && !ctx.isLiveCollaboration,
+    canExecute: (ctx) => ctx.hasDocument && ctx.canUndo,
     execute(services) {
-      if (services.getContext().isLiveCollaboration) return;
-      services.getInputHandler()?.performUndo();
+      if (!services.getContext().hasDocument) return;
+      const input = services.getInputHandler();
+      if (input?.canUndo?.() !== true) return;
+      input.performUndo();
     },
   },
   {
@@ -33,10 +35,12 @@ export const editCommands: CommandDef[] = [
     label: '다시 실행',
     icon: 'icon-redo',
     shortcutLabel: 'Ctrl+Shift+Z',
-    canExecute: (ctx) => ctx.hasDocument && ctx.canRedo && !ctx.isLiveCollaboration,
+    canExecute: (ctx) => ctx.hasDocument && ctx.canRedo,
     execute(services) {
-      if (services.getContext().isLiveCollaboration) return;
-      services.getInputHandler()?.performRedo();
+      if (!services.getContext().hasDocument) return;
+      const input = services.getInputHandler();
+      if (input?.canRedo?.() !== true) return;
+      input.performRedo();
     },
   },
   {
@@ -76,6 +80,12 @@ export const editCommands: CommandDef[] = [
     shortcutLabel: 'Alt+C',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
+      const ctx = services.getContext();
+      // Direct command consumers must not bypass the dispatcher checkpoint lease.
+      if (ctx.isLiveCollaboration && resolveFormatCopyCommand('edit:format-copy', ctx) === 'edit:format-paste') {
+        services.eventBus.emit('command-blocked', '모양 적용은 문서 편집 권한을 확인한 뒤 실행하세요.');
+        return;
+      }
       services.getInputHandler()?.performFormatCopy();
     },
   },
