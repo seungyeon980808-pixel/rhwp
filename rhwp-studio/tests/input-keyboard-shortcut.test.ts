@@ -16,6 +16,70 @@ registerHooks({
   },
 });
 const { onKeyDown, handleCtrlKey } = await import('../src/engine/input-handler-keyboard.ts');
+const { onCompositionStart, onInput } = await import('../src/engine/input-handler-text.ts');
+
+for (const syllable of ['ㅡ', 'ㄴ', 'ㅈ', 'ㅗ', 'ㅔ', 'ㅣ', 'ㅊ']) {
+  test(`Safari preedit ${syllable} before a selected-cell command never changes document text`, () => {
+    const { editor } = cells();
+    editor.textarea = { value: syllable };
+    onKeyDown.call(editor, keyEvent('F5', { code: 'F5' }));
+    editor.isComposing = true;
+    editor.compositionAnchor = editor.cursor.getPosition();
+    editor.compositionLength = 0;
+    editor.replaceTextAtRaw = () => assert.fail('table command preedit must not mutate document');
+    onInput.call(editor);
+    assert.equal(editor.compositionLength, 0);
+  });
+}
+
+test('Safari Process cell command discards its trailing IME input and allows the next composition', async () => {
+  const { editor } = cells();
+  let blurred = 0, focused = 0;
+  editor.textarea = { value: '', blur() { blurred += 1; }, focus() { focused += 1; } };
+  editor.resetRawTextMutationEffects = () => {};
+  editor.canInsertTextInFormMode = () => true;
+  editor.cursor.hasSelection = () => false;
+  onKeyDown.call(editor, keyEvent('F5', { code: 'F5' }));
+  onCompositionStart.call(editor);
+  const command = Object.assign(keyEvent('Process', { code: 'KeyM', isComposing: true }), { keyCode: 229 });
+  onKeyDown.call(editor, command);
+  assert.deepEqual(editor.dispatched, ['table:cell-merge']);
+  assert.equal(command.defaultPrevented, true);
+  assert.equal(blurred, 1); assert.equal(focused, 0);
+  editor.textarea.value = 'ㅡ';
+  onCompositionStart.call(editor); onInput.call(editor);
+  assert.equal(editor.textarea.value, '');
+  assert.equal(editor.isComposing, false);
+  assert.equal(editor.compositionAnchor, null);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(focused, 1);
+  onCompositionStart.call(editor);
+  assert.equal(editor.isComposing, true, 'next ordinary Korean composition must remain available');
+  assert.deepEqual(editor.compositionAnchor, editor.cursor.getPosition());
+});
+
+test('English cell command does not blur the editor or suppress ordinary input', () => {
+  const { editor } = cells();
+  editor.textarea = { blur() { assert.fail('English shortcut must not restart the IME'); } };
+  onKeyDown.call(editor, keyEvent('F5', { code: 'F5' }));
+  onKeyDown.call(editor, keyEvent('m', { code: 'KeyM' }));
+  assert.deepEqual(editor.dispatched, ['table:cell-merge']);
+  assert.equal(editor._discardCellShortcutInput, undefined);
+});
+
+test('cell-selection IME start does not delete the table control text selection', () => {
+  const { editor } = cells();
+  editor.textarea = { value: '' };
+  editor.resetRawTextMutationEffects = () => {};
+  editor.canInsertTextInFormMode = () => true;
+  editor.cursor.hasSelection = () => true;
+  editor.canDeleteSelectionInFormMode = () => true;
+  editor.deleteSelection = () => assert.fail('F5 command composition must not delete selected table');
+  onKeyDown.call(editor, keyEvent('F5', { code: 'F5' }));
+  onCompositionStart.call(editor);
+  assert.equal(editor.isComposing, true);
+  assert.equal(editor.compositionLength, 0);
+});
 
 function keyEvent(key: string, options: { code?: string; ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean; altKey?: boolean; isComposing?: boolean } = {}): KeyboardEvent {
   return Object.assign(new Event('keydown', { cancelable: true }), {

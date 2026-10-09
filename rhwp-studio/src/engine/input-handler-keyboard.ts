@@ -594,6 +594,30 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     const command = cellCommands[letter];
     if (command) {
       e.preventDefault();
+      // Safari's Korean IME may still send composition/input after a consumed
+      // Process keydown. End that native session before a table mutation clears
+      // the cell selection; otherwise M also inserts ㅡ into the merged cell.
+      if ((e.keyCode === 229 || e.isComposing || this.isComposing) && this.textarea) {
+        this._discardCellShortcutInput = true;
+        this.isComposing = false;
+        this.compositionAnchor = null;
+        this.compositionLength = 0;
+        this._lastCompositionText = '';
+        this.textarea.value = '';
+        this.textarea.blur();
+        // Notify iframe hosts that the command canceled native composition,
+        // including Safari's compositionstart-before-keydown event order.
+        this.textarea.dispatchEvent?.(new CompositionEvent('compositionend', { bubbles: true, data: '' }));
+        this.caret?.hideComposition?.();
+        // Only discard events produced by this key dispatch, not the next
+        // ordinary keystroke or the next independently started composition.
+        setTimeout(() => {
+          this.textarea.value = '';
+          this._discardCellShortcutInput = false;
+          const doc = this.textarea.ownerDocument;
+          if (!doc || doc.activeElement === doc.body) this.textarea.focus({ preventScroll: true });
+        }, 0);
+      }
       this.dispatcher?.dispatch(command, letter === 'c' || letter === 'ㅊ' ? { initialTab: 'background' } : undefined);
       return;
     }

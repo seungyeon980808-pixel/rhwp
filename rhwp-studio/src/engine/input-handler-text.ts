@@ -365,13 +365,20 @@ export function handleDelete(this: any, pos: DocumentPosition, inCell: boolean):
 }
 
 export function onCompositionStart(this: any): void {
+  if (this._discardCellShortcutInput) {
+    this.textarea.value = '';
+    // A native start can arrive after the canceled Process keydown. Keep
+    // composition observers in the same idle state as the input handler.
+    this.textarea.dispatchEvent?.(new CompositionEvent('compositionend', { bubbles: true, data: '' }));
+    return;
+  }
   if (this.canEditLiveSelection?.() === false) {
     this.textarea.value = ''; this.isComposing = false; this.compositionAnchor = null; this.compositionLength = 0;
     return;
   }
   this.resetRawTextMutationEffects();
   // 선택 영역이 있으면 삭제 후 조합 시작
-  if (this.cursor.hasSelection()) {
+  if (!this.cursor.isInCellSelectionMode?.() && this.cursor.hasSelection()) {
     if (!this.canDeleteSelectionInFormMode?.()) {
       this.textarea.value = '';
       return;
@@ -478,9 +485,14 @@ export function getTextAt(this: any, pos: DocumentPosition, count: number): stri
 
 export function onInput(this: any, e?: InputEvent): void {
   if (!this.active) return;
+  if (this._discardCellShortcutInput) { this.textarea.value = ''; return; }
   if (this.canEditLiveSelection?.() === false) { this.textarea.value = ''; return; }
 
   const text = this.textarea.value;
+  // macOS Safari can deliver the first Korean preedit input before its
+  // Process keydown. In cell selection these keys are table commands, so
+  // leave the native preedit for keydown to cancel instead of writing it.
+  if (this.cursor.isInCellSelectionMode?.() && /^[ㅡㄴㅈㅗㅔㅣㅊ]$/.test(text)) return;
   // const inputType = e?.inputType ?? 'unknown';
   // const inputData = e?.data ?? '';
   // const isComp = e?.isComposing ?? false;

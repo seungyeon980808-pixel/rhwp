@@ -503,6 +503,7 @@ export class InputHandler {
   private compositionAnchor: DocumentPosition | null = null;
   private compositionLength = 0; // 문서에 삽입된 조합 텍스트 길이
   private _lastCompositionText = '';
+  private _discardCellShortcutInput = false;
   private _lastComposedText = '';
   private _pendingNavAfterIME: NavigationKeyInput | null = null;
   // iOS 폴백: composition 이벤트 없이 input만으로 한글 조합 처리
