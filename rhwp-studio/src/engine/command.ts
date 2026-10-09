@@ -287,13 +287,13 @@ export function canUseLocalBodyTextReplace(
 
 /** cellPath를 WASM용 JSON 문자열로 변환 */
 function cellPathJson(pos: DocumentPosition): string {
-  return JSON.stringify(pos.cellPath ?? []);
+  return JSON.stringify(cellAxisPath(pos));
 }
 
 /** cellPath 의 최내곽(마지막) 엔트리의 cellParaIndex 를 지정 값으로 바꾼 pathJson.
  *  중첩 셀의 문단별 ByPath 호출(삭제 undo 저장과 문자 서식 적용/undo)에 쓴다. */
 function cellPathJsonForPara(pos: DocumentPosition, cellParaIndex: number): string {
-  const path = (pos.cellPath ?? []).map((e) => ({ ...e }));
+  const path = cellAxisPath(pos).map((e) => ({ ...e }));
   if (path.length > 0) path[path.length - 1].cellParaIndex = cellParaIndex;
   return JSON.stringify(path);
 }
