@@ -3795,8 +3795,31 @@ export class InputHandler {
     return pos.charOffset >= start && pos.charOffset <= end;
   }
 
+  private documentEditTableAddress: string | undefined;
+  setDocumentEditTableAddress(address?: string): void {
+    if (address && address !== this.documentEditTableAddress) this.history.clear(this.wasm);
+    this.documentEditTableAddress = address;
+  }
+  getDocumentEditTableAddress(): string | undefined { return this.documentEditTableAddress; }
+  currentOuterTableAddress(): string | undefined {
+    const pos = this.cursor.getPosition();
+    const first = pos.cellPath?.[0];
+    const control = first?.controlIndex ?? pos.controlIndex;
+    return pos.parentParaIndex !== undefined && control !== undefined ? `c:${pos.sectionIndex}:${pos.parentParaIndex}:${control}` : undefined;
+  }
+  canEditDocumentTableSelection(position?: DocumentPosition): boolean {
+    if (!this.documentEditTableAddress) return true;
+    if (this.cursor.isInHeaderFooter() || this.cursor.isInFootnote() || this.cursor.isInTableObjectSelection() || this.isInPictureObjectSelection()) return false;
+    const block = this.getSelectedCellBlock();
+    if (block) return block.cellIndices.length > 0 && `c:${block.sec}:${block.ppi}:${block.cellPath?.[0]?.controlIndex ?? block.ci}` === this.documentEditTableAddress;
+    const selection = this.cursor.getSelectionOrdered(), current = position ?? this.cursor.getPosition();
+    const regions = collaborationEditRegions(selection?.start ?? current, selection?.end ?? current);
+    return Boolean(regions?.length && regions.every(id => id.startsWith(`${this.documentEditTableAddress}:`)));
+  }
+
   /** Use the authoritative live whitelist for typing, IME, deletion and toolbar commands. */
   canEditLiveSelection(position?: DocumentPosition): boolean {
+    if (!this.canEditDocumentTableSelection(position)) return false;
     if (!this.wasm.isLiveStructureRestricted?.()) return true;
     const epoch = this.wasm.getLivePasteEpoch?.();
     if (!epoch || this.cursor.isInHeaderFooter() || this.cursor.isInFootnote()

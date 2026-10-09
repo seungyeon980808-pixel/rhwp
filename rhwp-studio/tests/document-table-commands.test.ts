@@ -1,0 +1,32 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import './helpers/live-native-loader.ts';
+import type { CommandServices, EditorContext } from '../src/command/types.ts';
+import type { CommandRegistry } from '../src/command/registry.ts';
+import type { EventBus } from '../src/core/event-bus.ts';
+const { CommandDispatcher } = await import('../src/command/dispatcher.ts');
+
+test('a table transaction permits commands in its table and fences other tables and root changes', () => {
+  let inside = true;
+  const executed: string[] = [], blocked: unknown[] = [];
+  const commands = ['table:cell-merge', 'table:cell-split', 'table:insert-row-above', 'table:delete', 'format:bold', 'edit:copy', 'view:zoom-in'];
+  const registry = { get: (id: string) => commands.includes(id) ? { execute: () => executed.push(id) } : undefined } as unknown as CommandRegistry;
+  const context = { documentEditTableAddress: 'c:0:4:1', isLiveCollaboration: false } as EditorContext;
+  const services = { getContext: () => context, getInputHandler: () => ({ canEditDocumentTableSelection: () => inside }) } as unknown as CommandServices;
+  const dispatcher = new CommandDispatcher(registry, services, { emit: (...args: unknown[]) => blocked.push(args) } as unknown as EventBus);
+  assert.equal(dispatcher.dispatch('table:cell-merge'), true);
+  assert.equal(dispatcher.dispatch('table:cell-split'), true);
+  assert.equal(dispatcher.dispatch('table:insert-row-above'), true);
+  assert.equal(dispatcher.dispatch('table:delete'), false);
+  inside = false;
+  assert.equal(dispatcher.dispatch('table:cell-merge'), false);
+  assert.equal(dispatcher.dispatch('format:bold'), false);
+  assert.equal(dispatcher.dispatch('edit:copy'), true);
+  assert.equal(dispatcher.dispatch('view:zoom-in'), true);
+  let resized = false;
+  assert.equal(dispatcher.deferDocumentOperation(() => { resized = true; }), true);
+  assert.equal(dispatcher.resumePendingDocumentOperation(), false);
+  assert.equal(resized, false);
+  assert.deepEqual(executed, ['table:cell-merge', 'table:cell-split', 'table:insert-row-above', 'edit:copy', 'view:zoom-in']);
+  assert.equal(blocked.length >= 4, true);
+});

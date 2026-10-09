@@ -300,6 +300,7 @@ function getContext(): EditorContext {
     isLiveCollaboration: collaborationActive && !collaborationReadOnly && !exclusiveDocumentEdit,
     canRequestDocumentEdit,
     isDocumentEditFrozen: exclusiveDocumentFrozen,
+    documentEditTableAddress: inputHandler?.getDocumentEditTableAddress(),
     canUndo: inputHandler?.canUndo() ?? false,
     canRedo: inputHandler?.canRedo() ?? false,
     zoom: canvasView?.getViewportManager().getZoom() ?? 1.0,
@@ -332,7 +333,7 @@ const commandServices: CommandServices = {
   gotoPage: (globalPage) => canvasView?.gotoPage(globalPage) ?? false,
   setEditMode,
   requestDocumentEdit: (command, params) => document.dispatchEvent(new CustomEvent('rhwp-document-edit-request', {
-    detail: { command, params, revision: documentState.revision() },
+    detail: { command, params, revision: documentState.revision(), tableAddress: inputHandler?.currentOuterTableAddress() },
   })),
 };
 
@@ -1726,6 +1727,7 @@ installEmbedRuntime({
       canRequestDocumentEdit = mode.canRequest;
       exclusiveDocumentEdit = mode.exclusive;
       exclusiveDocumentFrozen = mode.frozen === true;
+      inputHandler?.setDocumentEditTableAddress(mode.exclusive ? mode.tableAddress : undefined);
       if (!mode.exclusive && !mode.frozen) dispatcher.cancelPendingDocumentOperation();
       wasm.restrictLiveTableStructure(!mode.exclusive);
       // No text/structure operation is emitted during a full-document transaction.

@@ -594,7 +594,7 @@ export declare class RhwpEditor {
   undo(): Promise<HistoryUndoResultV1>;
   /** 현재 iframe을 영구 협업 읽기 전용 모드로 전환합니다. 문서 로드는 계속 허용됩니다. */
   beginCollaboration(): Promise<CollaborationBeginResultV1>;
-  setDocumentEditingMode(mode: { canRequest: boolean; exclusive: boolean; frozen?: boolean; expectedRevision?: number }): Promise<{ ok: true }>;
+  setDocumentEditingMode(mode: { canRequest: boolean; exclusive: boolean; frozen?: boolean; expectedRevision?: number; tableAddress?: string }): Promise<{ ok: true }>;
   beginLiveCollaboration(): Promise<CollaborationLiveBeginResultV1>;
   executeWritingCommand(command: string): Promise<boolean>;
   focusWritingSpace(regionId: string, offset: number): Promise<void>;

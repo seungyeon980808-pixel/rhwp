@@ -105,4 +105,8 @@ test('document editing RPC validates its mode and forwards only table or support
   await assert.rejects(routeEmbedRequest('executeWritingCommand', { command: 'file:open' }, rpc), /Invalid writing command/);
   await assert.rejects(routeEmbedRequest('setDocumentEditingMode', { canRequest: false, exclusive: true }, rpc));
   assert.deepEqual(calls, [{ canRequest: true, exclusive: true, frozen: false, expectedRevision: 7 }, 'table:cell-merge', 'table:pending-resize']);
+  await routeEmbedRequest('setDocumentEditingMode', { canRequest: true, exclusive: true, tableAddress: 'c:0:4:1' }, rpc);
+  assert.deepEqual(calls.at(-1), { canRequest: true, exclusive: true, tableAddress: 'c:0:4:1' });
+  await assert.rejects(routeEmbedRequest('setDocumentEditingMode', { canRequest: true, exclusive: true, tableAddress: 'c:0:4:1:2' }, rpc));
+  await assert.rejects(routeEmbedRequest('setDocumentEditingMode', { canRequest: true, exclusive: false, tableAddress: 'c:0:4:1' }, rpc));
 });

@@ -23,6 +23,12 @@ test('@rhwp/editor public API uses exact-origin MessageChannel v1 binary transpo
       'hml-export',
       'renderer-diagnostics-v1',
       'notify-saved-v1',
+      'selection-edit-v1',
+      'field-fill-v1',
+      'approved-template-edit-v1',
+      'reference-text-extract-v1',
+      'history-undo-v1',
+      'revisioned-save-v1',
     ]);
     assert.equal(transfer.length, 1);
     sessionId = message.sessionId;
@@ -44,6 +50,7 @@ test('@rhwp/editor public API uses exact-origin MessageChannel v1 binary transpo
         'hml-export',
         'renderer-diagnostics-v1',
         'notify-saved-v1',
+        'collaboration-live-v1',
       ],
     });
   });
@@ -86,6 +93,9 @@ test('@rhwp/editor public API uses exact-origin MessageChannel v1 binary transpo
   assert.deepEqual(await editor.notifySaved('sample-saved.hwp'), { ok: true, wasDirty: true });
   const notifyRequest = requests.find((request) => request.method === 'notifySaved');
   assert.deepEqual(notifyRequest.params, { fileName: 'sample-saved.hwp' });
+  await editor.setDocumentEditingMode({ canRequest: true, exclusive: true, tableAddress: 'c:0:4:1' });
+  assert.deepEqual(requests.find(request => request.method === 'setDocumentEditingMode').params,
+    { canRequest: true, exclusive: true, tableAddress: 'c:0:4:1' });
 
   editor.destroy();
   assert.equal(harness.iframe.removed, true);
@@ -227,6 +237,7 @@ function responseFor(message, legacy = false) {
     };
     case 'exportHwpVerify': return verifyResult();
     case 'notifySaved': return { ok: true, wasDirty: true };
+    case 'setDocumentEditingMode': return { ok: true };
     default: throw new Error(`Unexpected method: ${message.method}`);
   }
 }

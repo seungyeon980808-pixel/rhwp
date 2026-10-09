@@ -141,7 +141,7 @@ export interface EmbedRpcHandlers {
   undo?(): Promise<EmbedHistoryUndoResultV1>;
   collaborationActive?(): boolean;
   beginCollaboration?(): Promise<{ readonly schemaVersion: 1; readonly readOnly: true }>;
-  setDocumentEditingMode?(mode: { canRequest: boolean; exclusive: boolean; frozen?: boolean; expectedRevision?: number }): Promise<void>;
+  setDocumentEditingMode?(mode: { canRequest: boolean; exclusive: boolean; frozen?: boolean; expectedRevision?: number; tableAddress?: string }): Promise<void>;
   beginLiveCollaboration?(): Promise<{ readonly schemaVersion: 1; readonly readOnly: false }>;
   setLivePastePolicy?(policy: Readonly<{ epoch: string; writableRegionIds: readonly string[]; promptPolicy?: Readonly<{ memberId: string | null; spaces: readonly Readonly<{ id: string; regionId: string; start: number; end: number; memberId: string | null }>[]; texts: readonly Readonly<{ regionId: string; text: string }>[] }> }>): Promise<void>;
   executeWritingCommand?(command: string): Promise<boolean>;
@@ -305,8 +305,9 @@ export async function routeEmbedRequest(
     case 'setDocumentEditingMode': {
       if (!handlers.setDocumentEditingMode || typeof params.canRequest !== 'boolean' || typeof params.exclusive !== 'boolean'
         || params.frozen !== undefined && typeof params.frozen !== 'boolean' || params.exclusive && !params.canRequest || params.expectedRevision !== undefined && (!Number.isSafeInteger(params.expectedRevision) || (params.expectedRevision as number) < 0)
-        || Object.keys(params).some(key => !['canRequest', 'exclusive', 'frozen', 'expectedRevision'].includes(key))) throw new TypeError('Invalid document editing mode');
-      await handlers.setDocumentEditingMode(params as { canRequest: boolean; exclusive: boolean; frozen?: boolean; expectedRevision?: number });
+        || params.tableAddress !== undefined && (typeof params.tableAddress !== 'string' || !/^c:\d+:\d+:\d+$/u.test(params.tableAddress) || !params.exclusive)
+        || Object.keys(params).some(key => !['canRequest', 'exclusive', 'frozen', 'expectedRevision', 'tableAddress'].includes(key))) throw new TypeError('Invalid document editing mode');
+      await handlers.setDocumentEditingMode(params as { canRequest: boolean; exclusive: boolean; frozen?: boolean; expectedRevision?: number; tableAddress?: string });
       return { ok: true };
     }
     case 'setLivePastePolicy': {

@@ -39,6 +39,7 @@ export interface EditorContext {
   readonly isLiveCollaboration?: boolean;
   readonly canRequestDocumentEdit?: boolean;
   readonly isDocumentEditFrozen?: boolean;
+  readonly documentEditTableAddress?: string;
   /** Undo 가능한가? */
   canUndo: boolean;
   /** Redo 가능한가? */

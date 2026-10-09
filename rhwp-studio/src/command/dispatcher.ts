@@ -36,6 +36,7 @@ export class CommandDispatcher {
   private pendingDocumentOperation: (() => void) | null = null;
   deferDocumentOperation(operation: () => void): boolean {
     const ctx = this.services.getContext();
+    if (ctx.documentEditTableAddress) { this.eventBus.emit('command-blocked', '표의 변경을 먼저 저장한 뒤 크기를 조절하세요.'); return true; }
     if (!ctx.isLiveCollaboration) return false;
     if (!ctx.canRequestDocumentEdit) { this.eventBus.emit('command-blocked', unsupportedLiveStructureReason); return true; }
     if (this.pendingDocumentOperation) return true;
@@ -110,6 +111,12 @@ export class CommandDispatcher {
     const def = this.registry.get(commandId);
     if (!def) return '지원하지 않는 명령입니다.';
     const ctx = this.services.getContext();
+    if (ctx.documentEditTableAddress && !commandId.startsWith('view:') && !commandId.startsWith('file:') && commandId !== 'edit:copy') {
+      if (commandId.startsWith('table:') && !['table:cell-props', 'table:border-each', 'table:border-one', 'table:insert-row-col', 'table:delete-row-col', 'table:insert-row-above', 'table:insert-row-below', 'table:insert-col-left', 'table:insert-col-right', 'table:delete-row', 'table:delete-col', 'table:cell-split', 'table:cell-merge', 'table:cell-height-equal', 'table:cell-width-equal'].includes(commandId))
+        return '이 표의 변경을 먼저 저장한 뒤 다른 표 작업을 시작하세요.';
+      if (this.services.getInputHandler?.()?.canEditDocumentTableSelection?.() === false)
+        return '현재 편집 중인 표만 수정할 수 있습니다. 변경을 저장한 뒤 다른 영역을 선택하세요.';
+    }
     if (ctx.isDocumentEditFrozen) return '문서 저장 또는 연결 확인이 끝나면 편집할 수 있습니다.';
     if (this.services.wasm?.hasRestrictedPromptSpaces?.() && commandId.startsWith('format:align-'))
       return '담당 구간을 나눈 문단의 정렬은 변경할 수 없습니다.';
