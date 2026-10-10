@@ -11,6 +11,15 @@ use crate::model::path::{path_from_flat, PathSegment};
 use crate::model::shape::common_obj_offsets;
 
 impl DocumentCore {
+    fn commit_structural_border_fills(&mut self, fills: Vec<crate::model::style::BorderFill>) {
+        if fills.len() == self.document.doc_info.border_fills.len() {
+            return;
+        }
+        self.document.doc_info.border_fills = fills;
+        self.document.doc_info.raw_stream_dirty = true;
+        self.styles =
+            crate::renderer::style_resolver::resolve_styles(&self.document.doc_info, self.dpi);
+    }
     pub(crate) fn get_table_mut(
         &mut self,
         section_idx: usize,
@@ -54,6 +63,7 @@ impl DocumentCore {
         let prefix = &path[..path.len()-1];
         let host_para = prefix.last().unwrap().2;
         let control = path.last().unwrap().0;
+        let mut fills = self.document.doc_info.border_fills.clone();
         let table = {
             let paras = self.get_cell_paragraphs_mut_by_path(section, parent, prefix)?;
             let Some(Control::Table(table)) = paras.get_mut(host_para).and_then(|p| p.controls.get_mut(control))
@@ -61,11 +71,11 @@ impl DocumentCore {
             // Mutate a copy so a rejected operation cannot partially change the document.
             let mut edited = table.clone();
             let result = match operation {
-                "merge" => edited.merge_cells(number("startRow")?, number("startCol")?, number("endRow")?, number("endCol")?),
-                "split" => edited.split_cell_into(number("row")?, number("col")?, number("rows")?, number("columns")?,
+                "merge" => edited.merge_cells_with_borders(&mut fills, number("startRow")?, number("startCol")?, number("endRow")?, number("endCol")?),
+                "split" => edited.split_cell_into_with_borders(&mut fills, number("row")?, number("col")?, number("rows")?, number("columns")?,
                     options.get("equalHeight").and_then(|v| v.as_bool()).unwrap_or(false),
                     options.get("mergeFirst").and_then(|v| v.as_bool()).unwrap_or(false)),
-                "split-range" => edited.split_cells_in_range(number("startRow")?, number("startCol")?, number("endRow")?, number("endCol")?, number("rows")?, number("columns")?, options.get("equalHeight").and_then(|v| v.as_bool()).unwrap_or(false)),
+                "split-range" => edited.split_cells_in_range_with_borders(&mut fills, number("startRow")?, number("startCol")?, number("endRow")?, number("endCol")?, number("rows")?, number("columns")?, options.get("equalHeight").and_then(|v| v.as_bool()).unwrap_or(false)),
                 "insert-row" => edited.insert_row(number("row")?, options.get("below").and_then(|v| v.as_bool()).unwrap_or(false)),
                 "insert-column" => edited.insert_column(number("col")?, options.get("right").and_then(|v| v.as_bool()).unwrap_or(false)),
                 "delete-row" => edited.delete_row(number("row")?),
@@ -78,6 +88,7 @@ impl DocumentCore {
             *table = edited;
             table.cells.iter().map(|cell| cell.paragraphs.len()).collect::<Vec<_>>()
         };
+        self.commit_structural_border_fills(fills);
         // Reflow at each new inner cell's width, including merged/split cells.
         for (cell, count) in table.iter().enumerate() {
             let mut cell_path = path.clone(); cell_path.last_mut().unwrap().1 = cell;
@@ -708,9 +719,10 @@ impl DocumentCore {
         end_row: u16,
         end_col: u16,
     ) -> Result<String, HwpError> {
+        let mut fills = self.document.doc_info.border_fills.clone();
         let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
         table
-            .merge_cells(start_row, start_col, end_row, end_col)
+            .merge_cells_with_borders(&mut fills, start_row, start_col, end_row, end_col)
             .map_err(|e| HwpError::RenderError(e))?;
         table.dirty = true;
         let cell_count = table.cells.len();
@@ -723,6 +735,7 @@ impl DocumentCore {
         // 비우는 것과 동일하게, 병합도 셀 인덱스 배치를 바꾸므로 함께 비워야 한다.
         table.local_resize_cell_widths.clear();
         table.local_resize_cell_heights.clear();
+        self.commit_structural_border_fills(fills);
 
         // 주 셀 폭이 흡수된 셀들만큼 넓어졌으므로 문단들을 새 폭으로 재배치(line_segs
         // 재계산)한다. set_table_column_widths_native/resize_table_cells_native와 동일 규약
@@ -775,9 +788,10 @@ impl DocumentCore {
         row: u16,
         col: u16,
     ) -> Result<String, HwpError> {
+        let mut fills = self.document.doc_info.border_fills.clone();
         let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
         table
-            .split_cell(row, col)
+            .split_cell_with_borders(&mut fills, row, col)
             .map_err(|e| HwpError::RenderError(e))?;
         table.dirty = true;
         let cell_count = table.cells.len();
@@ -787,6 +801,7 @@ impl DocumentCore {
         // local_resize_cell_widths/heights의 cell_idx가 stale해진다. 함께 비운다.
         table.local_resize_cell_widths.clear();
         table.local_resize_cell_heights.clear();
+        self.commit_structural_border_fills(fills);
 
         self.reflow_stale_cells_after_split(section_idx, parent_para_idx, control_idx);
 
@@ -818,9 +833,10 @@ impl DocumentCore {
         equal_row_height: bool,
         merge_first: bool,
     ) -> Result<String, HwpError> {
+        let mut fills = self.document.doc_info.border_fills.clone();
         let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
         table
-            .split_cell_into(row, col, n_rows, m_cols, equal_row_height, merge_first)
+            .split_cell_into_with_borders(&mut fills, row, col, n_rows, m_cols, equal_row_height, merge_first)
             .map_err(|e| HwpError::RenderError(e))?;
         table.dirty = true;
         let cell_count = table.cells.len();
@@ -829,6 +845,7 @@ impl DocumentCore {
         // push() 후 재정렬하므로 local_resize_cell_widths/heights가 stale해진다.
         table.local_resize_cell_widths.clear();
         table.local_resize_cell_heights.clear();
+        self.commit_structural_border_fills(fills);
 
         self.reflow_stale_cells_after_split(section_idx, parent_para_idx, control_idx);
 
@@ -917,9 +934,11 @@ impl DocumentCore {
         m_cols: u16,
         equal_row_height: bool,
     ) -> Result<String, HwpError> {
+        let mut fills = self.document.doc_info.border_fills.clone();
         let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
         table
-            .split_cells_in_range(
+            .split_cells_in_range_with_borders(
+                &mut fills,
                 start_row,
                 start_col,
                 end_row,
@@ -937,6 +956,7 @@ impl DocumentCore {
         // 인덱스 배치를 바꾸므로 local_resize_cell_widths/heights가 stale해진다. 함께 비운다.
         table.local_resize_cell_widths.clear();
         table.local_resize_cell_heights.clear();
+        self.commit_structural_border_fills(fills);
 
         self.reflow_stale_cells_after_split(section_idx, parent_para_idx, control_idx);
 
@@ -3788,6 +3808,167 @@ fn json_escape(s: &str) -> String {
 mod tests {
     use crate::model::shape::common_obj_offsets;
     use crate::parser::control::parse_common_obj_attr;
+
+    mod structural_edit_regression {
+        use crate::document_core::DocumentCore;
+        use crate::model::{
+            control::Control,
+            document::Section,
+            paragraph::Paragraph,
+            style::{BorderFill, BorderLine, BorderLineType},
+            table::{Cell, Table},
+        };
+
+        fn fixture(nested: bool) -> DocumentCore {
+            let thin = BorderLine {
+                line_type: BorderLineType::Solid,
+                width: 1,
+                color: 0,
+            };
+            let plain = BorderFill {
+                borders: [thin; 4],
+                ..Default::default()
+            };
+            let mut left = plain.clone();
+            left.borders[0].width = 7;
+            let mut right = plain.clone();
+            right.borders[1].width = 7;
+            let mut t = Table {
+                row_count: 3,
+                col_count: 2,
+                border_fill_id: 1,
+                ..Default::default()
+            };
+            for row in 0..3 {
+                t.cells.push(Cell::new_empty(0, row, 12000, 2000, 2));
+                t.cells.push(Cell::new_empty(1, row, 8000, 2000, 3));
+            }
+            t.rebuild_grid();
+            t.rebuild_row_sizes();
+            t.update_ctrl_dimensions();
+            let mut para = Paragraph::new_empty();
+            if nested {
+                let mut outer = Table {
+                    row_count: 1,
+                    col_count: 1,
+                    border_fill_id: 1,
+                    ..Default::default()
+                };
+                let mut host = Cell::new_empty(0, 0, 22000, 8000, 1);
+                host.paragraphs[0]
+                    .controls
+                    .push(Control::Table(Box::new(t)));
+                outer.cells.push(host);
+                outer.rebuild_grid();
+                outer.rebuild_row_sizes();
+                outer.update_ctrl_dimensions();
+                para.controls.push(Control::Table(Box::new(outer)));
+            } else {
+                para.controls.push(Control::Table(Box::new(t)));
+            }
+            let mut core = DocumentCore::new_empty();
+            core.create_blank_document_native().unwrap();
+            core.document.sections = vec![Section {
+                paragraphs: vec![para],
+                ..Default::default()
+            }];
+            core.document.doc_info.border_fills = vec![plain, left, right];
+            let document = core.document.clone();
+            core.set_document(document);
+            core
+        }
+
+        fn table(core: &DocumentCore, nested: bool) -> &Table {
+            let outer = core.document.sections[0].paragraphs[0]
+                .controls
+                .iter()
+                .find_map(|c| {
+                    if let Control::Table(t) = c {
+                        Some(t.as_ref())
+                    } else {
+                        None
+                    }
+                })
+                .expect("table");
+            if !nested {
+                return outer;
+            }
+            outer.cells[0].paragraphs[0]
+                .controls
+                .iter()
+                .find_map(|c| {
+                    if let Control::Table(t) = c {
+                        Some(t.as_ref())
+                    } else {
+                        None
+                    }
+                })
+                .expect("nested table")
+        }
+
+        fn verify(core: &DocumentCore, nested: bool) {
+            let t = table(core, nested);
+            assert_eq!(t.common.width, 20000);
+            let cells: Vec<_> = t.cells.iter().filter(|c| c.row == 1).collect();
+            assert_eq!(cells.len(), 2);
+            assert_eq!(cells[0].width + cells[1].width, 20000);
+            let fills = &core.document.doc_info.border_fills;
+            assert_eq!(
+                fills[cells[0].border_fill_id as usize - 1].borders[1].width,
+                1
+            );
+            assert_eq!(
+                fills[cells[1].border_fill_id as usize - 1].borders[1].width,
+                7
+            );
+            assert_eq!(t.cell_at(0, 0).unwrap().width, 12000);
+            assert_eq!(t.cell_at(0, t.col_count - 1).unwrap().width, 8000);
+            assert_eq!(fills[1].borders[1].width, 1);
+            assert_eq!(fills[2].borders[1].width, 7);
+        }
+
+        fn exercise(nested: bool) {
+            let mut core = fixture(nested);
+            if nested {
+                let path = r#"[{"controlIndex":0,"cellIndex":0,"cellParaIndex":0},{"controlIndex":0,"cellIndex":0,"cellParaIndex":0}]"#;
+                core.edit_nested_table_native(
+                    0,
+                    0,
+                    path,
+                    r#"{"operation":"merge","startRow":1,"startCol":0,"endRow":1,"endCol":1}"#,
+                )
+                .unwrap();
+                core.edit_nested_table_native(
+                    0,
+                    0,
+                    path,
+                    r#"{"operation":"split","row":1,"col":0,"rows":1,"columns":2}"#,
+                )
+                .unwrap();
+            } else {
+                core.merge_table_cells_native(0, 0, 0, 1, 0, 1, 1).unwrap();
+                core.split_table_cell_into_native(0, 0, 0, 1, 0, 1, 2, false, false)
+                    .unwrap();
+            }
+            verify(&core, nested);
+            assert!(core.document.doc_info.raw_stream_dirty);
+            for bytes in [
+                core.export_hwp_native().unwrap(),
+                core.export_hwpx_native().unwrap(),
+            ] {
+                verify(&DocumentCore::from_bytes(&bytes).unwrap(), nested);
+            }
+        }
+
+        #[test]
+        fn flat_merge_split_borders_and_width_survive_both_formats() {
+            exercise(false);
+        }
+        #[test]
+        fn nested_merge_split_borders_and_width_survive_both_formats() {
+            exercise(true);
+        }
+    }
 
     #[test]
     fn raw_ctrl_data_offsets_match_parser() {

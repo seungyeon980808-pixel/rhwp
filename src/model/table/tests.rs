@@ -1060,6 +1060,124 @@ fn test_split_cells_in_range_single_cell() {
 // === transpose copy/paste 테스트 ===
 
 #[test]
+fn split_unequal_merged_columns_keeps_original_grid_boundaries() {
+    let mut table = make_table(3, 3);
+    table.set_column_widths(&[6166, 17203, 10130]).unwrap();
+    table.raw_ctrl_data = vec![0; 20];
+    table.update_ctrl_dimensions();
+    table.merge_cells(1, 1, 1, 2).unwrap();
+    table.split_cell_into(1, 1, 1, 2, false, false).unwrap();
+    assert_eq!(table.common.width, 33499);
+    assert_eq!(&table.raw_ctrl_data[12..16], &33499u32.to_le_bytes());
+    // The new cut (13667) is inside the original 17203-wide column.
+    // Keep that old boundary as well, so unaffected rows don't grow.
+    assert_eq!(table.col_count, 4);
+    assert_eq!(table.cell_at(0, 1).unwrap().width, 17203);
+    assert_eq!(table.cell_at(0, 1).unwrap().col_span, 2);
+    assert_eq!(table.cell_at(0, 3).unwrap().width, 10130);
+    let first = table.cell_at(1, 1).unwrap();
+    let second = table.cell_at(1, 2).unwrap();
+    assert_eq!((first.width, first.col_span), (13667, 1));
+    assert_eq!((second.width, second.col_span), (13666, 2));
+    table.merge_cells(1, 1, 1, 3).unwrap();
+    assert_eq!(table.cell_at(1, 1).unwrap().width, 27333);
+    table.split_cell_into(1, 1, 1, 2, false, false).unwrap();
+    assert_eq!(table.common.width, 33499);
+    assert_eq!(table.col_count, 4);
+}
+
+#[test]
+fn repeated_split_uses_existing_cut_instead_of_adding_another_column() {
+    let mut table = make_table(3, 2);
+    table.split_cell_into(2, 0, 1, 2, false, false).unwrap();
+    table.split_cell_into(1, 0, 1, 2, false, false).unwrap();
+    assert_eq!(table.col_count, 3);
+    assert_eq!(table.cell_at(0, 0).unwrap().width, 3600);
+    assert_eq!(table.cell_at(0, 0).unwrap().col_span, 2);
+}
+
+fn structural_test_fills() -> Vec<crate::model::style::BorderFill> {
+    use crate::model::style::{BorderFill, BorderLine, BorderLineType};
+    let thin = BorderLine {
+        line_type: BorderLineType::Solid,
+        width: 1,
+        color: 0,
+    };
+    let thick = BorderLine { width: 7, ..thin };
+    let plain = BorderFill {
+        borders: [thin; 4],
+        ..Default::default()
+    };
+    let mut right = plain.clone();
+    right.borders[1] = thick;
+    let mut left = plain.clone();
+    left.borders[0] = thick;
+    vec![plain, right, left]
+}
+
+#[test]
+fn merge_keeps_right_edge_and_does_not_change_shared_border_styles() {
+    let mut table = make_table(2, 2);
+    table.cell_at_mut(0, 0).unwrap().border_fill_id = 3;
+    table.cell_at_mut(0, 1).unwrap().border_fill_id = 2;
+    let mut fills = structural_test_fills();
+    table
+        .merge_cells_with_borders(&mut fills, 0, 0, 0, 1)
+        .unwrap();
+    let merged = table.cell_at(0, 0).unwrap();
+    let borders = fills[merged.border_fill_id as usize - 1].borders;
+    assert_eq!(borders[0].width, 7);
+    assert_eq!(borders[1].width, 7);
+    assert_eq!(fills[0].borders[1].width, 1);
+    assert_eq!(fills[2].borders[1].width, 1);
+    assert_eq!(table.cell_at(1, 0).unwrap().border_fill_id, 1);
+    assert_eq!(table.cell_at(1, 1).unwrap().border_fill_id, 1);
+}
+
+#[test]
+fn split_keeps_thick_outer_edge_off_the_new_internal_edge() {
+    let mut table = make_table(2, 2);
+    table.cell_at_mut(0, 1).unwrap().border_fill_id = 2;
+    let mut fills = structural_test_fills();
+    table
+        .split_cell_into_with_borders(&mut fills, 0, 1, 1, 2, false, false)
+        .unwrap();
+    let left = table.cell_at(0, 1).unwrap();
+    let right = table.cell_at(0, 2).unwrap();
+    assert_eq!(fills[left.border_fill_id as usize - 1].borders[1].width, 1);
+    assert_eq!(fills[right.border_fill_id as usize - 1].borders[0].width, 1);
+    assert_eq!(fills[right.border_fill_id as usize - 1].borders[1].width, 7);
+    assert_eq!(fills[1].borders[1].width, 7);
+    assert_eq!(table.cell_at(1, 1).unwrap().border_fill_id, 1);
+}
+
+#[test]
+fn resplit_merged_cell_removes_unused_cuts_and_keeps_outer_border() {
+    let mut table = make_table(2, 2);
+    table.cell_at_mut(0, 1).unwrap().border_fill_id = 2;
+    let mut fills = structural_test_fills();
+    table
+        .split_cell_into_with_borders(&mut fills, 0, 1, 1, 3, false, false)
+        .unwrap();
+    assert_eq!(table.col_count, 4);
+    table
+        .merge_cells_with_borders(&mut fills, 0, 1, 0, 3)
+        .unwrap();
+    table
+        .split_cell_into_with_borders(&mut fills, 0, 1, 1, 2, false, false)
+        .unwrap();
+    assert_eq!(table.col_count, 3);
+    assert_eq!(table.common.width, 7200);
+    let left = table.cell_at(0, 1).unwrap();
+    let right = table.cell_at(0, 2).unwrap();
+    assert_eq!(left.width + right.width, 3600);
+    assert_eq!(fills[left.border_fill_id as usize - 1].borders[1].width, 1);
+    assert_eq!(fills[right.border_fill_id as usize - 1].borders[1].width, 7);
+    assert_eq!(table.cell_at(1, 1).unwrap().width, 3600);
+    assert_eq!(table.cell_at(1, 1).unwrap().col_span, 2);
+}
+
+#[test]
 fn test_transpose_copy_paste_4x2_to_2x4() {
     let mut table = make_table(4, 6);
     for r in 0..4u16 {

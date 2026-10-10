@@ -882,6 +882,98 @@ impl Table {
         }
     }
 
+    fn sync_ctrl_width(&mut self, width: HwpUnit) {
+        self.common.width = width;
+        if self.raw_ctrl_data.len() >= common_obj_offsets::WIDTH.end {
+            self.raw_ctrl_data[common_obj_offsets::WIDTH].copy_from_slice(&width.to_le_bytes());
+        }
+    }
+
+    // A split adds physical cut positions to the existing grid. Reusing an old
+    // column boundary for a different cut makes unrelated rows disagree about
+    // column widths, and the renderer then expands the table to satisfy both.
+    fn split_column_grid(
+        &self,
+        col: u16,
+        span: u16,
+        width: HwpUnit,
+        parts: u16,
+    ) -> Result<(Vec<u16>, Vec<u16>, Vec<HwpUnit>), String> {
+        let end = checked_table_span_end(col, span, "열")?;
+        if span == 0 || end > self.col_count {
+            return Err("손상된 셀 범위는 나눌 수 없습니다".into());
+        }
+        if parts == 1 {
+            return Ok(((0..=self.col_count).collect(), vec![span], vec![width]));
+        }
+        if width < parts as u32 {
+            return Err("손상되거나 너무 좁은 셀은 나눌 수 없습니다".into());
+        }
+        let widths = self.structural_column_widths();
+        let old_sum: u64 = widths[col as usize..end as usize]
+            .iter()
+            .map(|w| *w as u64)
+            .sum();
+        let mut old_cuts = vec![0];
+        let mut cumulative = 0u64;
+        for w in &widths[col as usize..end as usize] {
+            cumulative += *w as u64;
+            old_cuts.push((cumulative * width as u64 / old_sum) as u32);
+        }
+        let base = width / parts as u32;
+        let remainder = width % parts as u32;
+        let sub_widths: Vec<_> = (0..parts)
+            .map(|i| base + if i == 0 { remainder } else { 0 })
+            .collect();
+        let mut new_cuts = vec![0];
+        for w in &sub_widths {
+            new_cuts.push(new_cuts.last().copied().unwrap() + w);
+        }
+        // A previous merge can leave an unused logical boundary. Its physical
+        // position is no longer constrained, so don't add it back as a new cut.
+        let used = |boundary: u16| {
+            self.cells
+                .iter()
+                .any(|c| c.col == boundary || c.col as u32 + c.col_span as u32 == boundary as u32)
+                || self
+                    .zones
+                    .iter()
+                    .any(|z| z.start_col == boundary || z.end_col as u32 + 1 == boundary as u32)
+        };
+        let mut cuts: Vec<_> = old_cuts
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| used(col + *i as u16))
+            .map(|(_, cut)| *cut)
+            .collect();
+        cuts.extend(&new_cuts);
+        cuts.sort_unstable();
+        cuts.dedup();
+        if old_cuts.windows(2).any(|w| w[0] == w[1]) {
+            return Err("손상된 열 경계는 나눌 수 없습니다".into());
+        }
+        let grid_span = u16::try_from(cuts.len() - 1)
+            .map_err(|_| "분할 열 수가 범위를 초과합니다".to_string())?;
+        let new_count = checked_table_u16_add(self.col_count - span, grid_span, "표 열 수")?;
+        let cut_index = |cut| cuts.partition_point(|c| *c <= cut).saturating_sub(1) as u16;
+        let boundary_map = (0..=self.col_count)
+            .map(|boundary| {
+                if boundary < col {
+                    boundary
+                } else if boundary <= end {
+                    col + cut_index(old_cuts[(boundary - col) as usize])
+                } else {
+                    new_count - (self.col_count - boundary)
+                }
+            })
+            .collect();
+        let sub_spans = new_cuts
+            .windows(2)
+            .map(|w| cut_index(w[1]) - cut_index(w[0]))
+            .collect();
+        Ok((boundary_map, sub_spans, sub_widths))
+    }
+
     fn stretched_row_heights(&self) -> Option<Vec<HwpUnit>> {
         let mut heights = self.get_row_heights();
         let raw_sum: u64 = heights.iter().map(|h| *h as u64).sum();
@@ -928,6 +1020,61 @@ impl Table {
         for w in &mut widths {
             if *w == 0 {
                 *w = 1800;
+            }
+        }
+        widths
+    }
+
+    // Structural edits also need columns which exist only inside spanning
+    // cells. A generic 1800-unit fallback would shrink a subsequent merge.
+    fn structural_column_widths(&self) -> Vec<HwpUnit> {
+        let mut widths = vec![0; self.col_count as usize];
+        for cell in &self.cells {
+            if cell.col_span == 1 && (cell.col as usize) < widths.len() {
+                widths[cell.col as usize] = widths[cell.col as usize].max(cell.width);
+            }
+        }
+        let mut constraints: Vec<_> = self
+            .cells
+            .iter()
+            .filter(|c| c.col_span > 1 && c.col as usize + c.col_span as usize <= widths.len())
+            .collect();
+        constraints.sort_by_key(|c| c.col_span);
+        for _ in 0..widths.len() {
+            let mut progress = false;
+            for cell in &constraints {
+                let range = cell.col as usize..cell.col as usize + cell.col_span as usize;
+                let missing: Vec<_> = range.clone().filter(|&i| widths[i] == 0).collect();
+                if missing.len() == 1 {
+                    let sum: u64 = range.map(|i| widths[i] as u64).sum();
+                    let remaining = (cell.width as u64).saturating_sub(sum) as u32;
+                    if remaining > 0 {
+                        widths[missing[0]] = remaining;
+                        progress = true;
+                    }
+                }
+            }
+            if !progress {
+                break;
+            }
+        }
+        for cell in constraints {
+            let range = cell.col as usize..cell.col as usize + cell.col_span as usize;
+            let missing: Vec<_> = range.clone().filter(|&i| widths[i] == 0).collect();
+            if missing.is_empty() {
+                continue;
+            }
+            let known: u64 = range.map(|i| widths[i] as u64).sum();
+            let remainder = (cell.width as u64).saturating_sub(known) as u32;
+            let base = remainder / missing.len() as u32;
+            let extra = remainder % missing.len() as u32;
+            for (n, i) in missing.into_iter().enumerate() {
+                widths[i] = base + if n == 0 { extra } else { 0 };
+            }
+        }
+        for width in &mut widths {
+            if *width == 0 {
+                *width = 1800;
             }
         }
         widths
@@ -1493,7 +1640,7 @@ impl Table {
         }
 
         // 열폭/행높이 합산 (원본 값 보존: 0은 fallback 없이 그대로 유지)
-        let col_widths = self.get_column_widths();
+        let col_widths = self.structural_column_widths();
         let raw_row_heights = self.get_raw_row_heights();
         let new_width: HwpUnit = (start_col..=end_col)
             .map(|c| col_widths.get(c as usize).copied().unwrap_or(0))
@@ -1621,7 +1768,7 @@ impl Table {
         }
 
         // 열폭 계산: 다른 행의 col_span==1 셀에서 실제 폭 추출, 없으면 균등 분배
-        let col_widths = self.get_column_widths();
+        let col_widths = self.structural_column_widths();
         let split_col_widths: Vec<HwpUnit> = {
             let has_real = (target_col..col_end).all(|c| {
                 self.cells.iter().any(|cell| {
@@ -1755,15 +1902,16 @@ impl Table {
         let cs = self.cells[cell_idx].col_span;
         let rs = self.cells[cell_idx].row_span;
 
-        // 현재 span 기준으로 추가 열/행 계산
-        // (다중 셀 분할 시 이전 분할로 span이 확장된 경우 extra=0)
-        let extra_cols = if m_cols > cs { m_cols - cs } else { 0 };
+        let original_width = self.common.width;
+        let original_height = self.common.height;
+        let (column_map, sub_cspans, sub_widths) =
+            self.split_column_grid(target_col, cs, target_width, m_cols)?;
+        let new_col_count = *column_map.last().unwrap();
+        let grid_cols = column_map[(target_col + cs) as usize] - target_col;
         let extra_rows = if n_rows > rs { n_rows - rs } else { 0 };
 
         // 서브셀이 차지할 그리드 열/행 수
-        let grid_cols = checked_table_u16_add(cs, extra_cols, "분할 열 span")?; // = max(m_cols, cs)
         let grid_rows = checked_table_u16_add(rs, extra_rows, "분할 행 span")?; // = max(n_rows, rs)
-        let new_col_count = checked_table_u16_add(self.col_count, extra_cols, "표 열 수")?;
         let new_row_count = checked_table_u16_add(self.row_count, extra_rows, "표 행 수")?;
         let target_col_end = checked_table_span_end(target_col, grid_cols, "열")?;
         let target_row_end = checked_table_span_end(target_row, grid_rows, "행")?;
@@ -1777,13 +1925,9 @@ impl Table {
             if i == cell_idx {
                 continue;
             }
-            if extra_cols > 0 {
-                let col_end = checked_table_span_end(cell.col, cell.col_span, "열")?;
-                if cell.col > target_col {
-                    checked_table_u16_add(cell.col, extra_cols, "셀 열 인덱스")?;
-                } else if cell.col == target_col || col_end > target_col {
-                    checked_table_u16_add(cell.col_span, extra_cols, "셀 열 span")?;
-                }
+            let col_end = checked_table_span_end(cell.col, cell.col_span, "열")?;
+            if col_end > self.col_count {
+                return Err("손상된 셀 열 범위는 나눌 수 없습니다".into());
             }
             if extra_rows > 0 {
                 let row_end = checked_table_span_end(cell.row, cell.row_span, "행")?;
@@ -1794,13 +1938,6 @@ impl Table {
                 }
             }
         }
-
-        // 폭 분배: 균등 분배 (나머지는 첫 셀에 가산)
-        let base_w = target_width / m_cols as u32;
-        let remainder_w = target_width - base_w * m_cols as u32;
-        let sub_widths: Vec<HwpUnit> = (0..m_cols)
-            .map(|i| base_w + if i == 0 { remainder_w } else { 0 })
-            .collect();
 
         // 높이 분배
         let sub_heights: Vec<HwpUnit> = if equal_row_height || n_rows > 1 {
@@ -1814,11 +1951,6 @@ impl Table {
         };
 
         // 서브셀의 col_span/row_span 분배 (grid_cols를 m_cols개에 분배)
-        let base_cspan = grid_cols / m_cols;
-        let cspan_rem = grid_cols - base_cspan * m_cols;
-        let sub_cspans: Vec<u16> = (0..m_cols)
-            .map(|i| base_cspan + if i < cspan_rem { 1 } else { 0 })
-            .collect();
         let base_rspan = grid_rows / n_rows;
         let rspan_rem = grid_rows - base_rspan * n_rows;
         let sub_rspans: Vec<u16> = (0..n_rows)
@@ -1847,17 +1979,10 @@ impl Table {
             // [#4264] col/row 는 파일에서 그대로 온 u16 이라 saturating_add 없이
             // 더하면 오버플로 패닉한다(rebuild_grid()와 동일 원인).
             // --- 열 방향 조정 ---
-            if extra_cols > 0 {
-                if cell.col > target_col {
-                    cell.col = checked_table_u16_add(cell.col, extra_cols, "셀 열 인덱스")?;
-                } else if cell.col == target_col {
-                    cell.col_span = checked_table_u16_add(cell.col_span, extra_cols, "셀 열 span")?;
-                } else if cell.col < target_col
-                    && checked_table_span_end(cell.col, cell.col_span, "열")? > target_col
-                {
-                    cell.col_span = checked_table_u16_add(cell.col_span, extra_cols, "셀 열 span")?;
-                }
-            }
+            let start = column_map[cell.col as usize];
+            let end = column_map[(cell.col + cell.col_span) as usize];
+            cell.col = start;
+            cell.col_span = end - start;
 
             // --- 행 방향 조정 ---
             if extra_rows > 0 {
@@ -1869,6 +1994,21 @@ impl Table {
                     && checked_table_span_end(cell.row, cell.row_span, "행")? > target_row
                 {
                     cell.row_span = checked_table_u16_add(cell.row_span, extra_rows, "셀 행 span")?;
+                }
+            }
+        }
+
+        for zone in &mut self.zones {
+            if zone.start_col < self.col_count && zone.end_col < self.col_count {
+                zone.start_col = column_map[zone.start_col as usize];
+                zone.end_col = column_map[zone.end_col as usize + 1].saturating_sub(1);
+            }
+            if extra_rows > 0 {
+                if zone.start_row > target_row {
+                    zone.start_row = zone.start_row.saturating_add(extra_rows);
+                }
+                if zone.end_row >= target_row {
+                    zone.end_row = zone.end_row.saturating_add(extra_rows);
                 }
             }
         }
@@ -1920,6 +2060,13 @@ impl Table {
         self.cells.sort_by_key(|c| (c.row, c.col));
         self.rebuild_row_sizes();
         self.update_ctrl_dimensions();
+        // Splitting reserves the same rectangle; it is not a table resize.
+        if original_width > 0 {
+            self.sync_ctrl_width(original_width);
+        }
+        if original_height > 0 {
+            self.sync_ctrl_height(original_height);
+        }
         self.rebuild_grid();
 
         Ok(())
@@ -1965,3 +2112,5 @@ impl Table {
 
 #[cfg(test)]
 mod tests;
+
+mod structural_borders;
