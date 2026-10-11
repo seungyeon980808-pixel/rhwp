@@ -276,31 +276,9 @@ export class Toolbar {
       }
 
       const langVal = this.fontLang.value;
-      if (langVal === 'all') {
-        // 전체 언어 일괄 적용
-        const fontId = this.wasm.findOrCreateFontId(name);
-        if (fontId >= 0) {
-          this.eventBus.emit('format-char', { fontId } as CharProperties);
-        }
-      } else {
-        // 특정 언어만 적용 (fontIds 배열)
-        const langIdx = parseInt(langVal, 10);
-        const fontId = this.wasm.findOrCreateFontIdForLang(langIdx, name);
-        if (fontId >= 0 && this.lastFontFamilies) {
-          // 현재 fontIds를 기반으로 해당 언어만 교체
-          const ids: number[] = [];
-          for (let i = 0; i < 7; i++) {
-            if (i === langIdx) {
-              ids.push(fontId);
-            } else {
-              // 다른 언어는 현재 글꼴 ID 유지 (기존 값 조회)
-              const existingName = this.lastFontFamilies[i] || this.lastFontFamilies[0];
-              ids.push(this.wasm.findOrCreateFontIdForLang(i, existingName));
-            }
-          }
-          this.eventBus.emit('format-char', { fontIds: ids } as CharProperties);
-        }
-      }
+      this.dispatcher.dispatch('format:font-family', { fontName: name,
+        language: langVal === 'all' ? 'all' : parseInt(langVal, 10),
+        ...(this.lastFontFamilies ? { currentFontFamilies: this.lastFontFamilies.map(family => family || this.lastFontFamilies![0]) } : {}) });
     });
 
     // 언어 선택 변경 시 해당 언어의 글꼴명을 드롭다운에 표시
@@ -898,11 +876,6 @@ export class Toolbar {
     const langKeys: (keyof Omit<FontSet, 'name'>)[] = [
       'korean', 'english', 'chinese', 'japanese', 'other', 'symbol', 'user',
     ];
-    const ids: number[] = [];
-    for (let i = 0; i < 7; i++) {
-      const fontName = fs[langKeys[i]];
-      ids.push(this.wasm.findOrCreateFontIdForLang(i, fontName));
-    }
-    this.eventBus.emit('format-char', { fontIds: ids } as CharProperties);
+    this.dispatcher.dispatch('format:font-family', { fontFamilies: langKeys.map(key => fs[key]) });
   }
 }

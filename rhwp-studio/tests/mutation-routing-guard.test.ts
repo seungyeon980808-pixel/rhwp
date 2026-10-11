@@ -191,6 +191,7 @@ const BASELINE: Readonly<Record<string, number>> = {
   'src/command/commands/insert.ts': 16, // -3: z순서 4 호출부를 changeZOrder 헬퍼 1곳으로 합침(#2370 A)
   'src/command/commands/page.ts': 13,
   'src/command/commands/table.ts': 36, // +1: 블록계산 이관 시 evaluateTableFormula dry-run(write=false, 검증) 추가 / +2: 표 나누기·붙이기(splitTable·mergeTableWithNext) — 둘 다 executeOperation snapshot 으로 라우팅 (undo 기록됨)
+  'src/command/font-family-command.ts': 3, // toolbar에서 글꼴 ID 생성 3곳 이관. dispatcher의 문서 편집 승인 후 실행하고 format-char snapshot으로 적용한다.
   'src/ui/bookmark-dialog.ts': 3,
   'src/ui/cell-border-bg-dialog.ts': 5,
   'src/ui/column-settings-dialog.ts': 1,
@@ -208,7 +209,7 @@ const BASELINE: Readonly<Record<string, number>> = {
   'src/ui/style-dialog.ts': 2, // +1: [#3387] 삭제를 snapshot 으로 라우팅하며 services 미주입 fallback 분기 추가(원장은 표면 수만 세므로 라우팅해도 줄지 않는다)
   'src/ui/style-edit-dialog.ts': 6,
   'src/ui/table-cell-props-dialog.ts': 2,
-  'src/ui/toolbar.ts': 4,
+  'src/ui/toolbar.ts': 1, // -3: 글꼴 ID 생성은 승인 전 변경을 막기 위해 font-family-command로 이관
   // engine/input-handler* — 드래그/nudge 등 직접-뮤테이션 최고밀도 영역.
   'src/engine/input-handler.ts': 33, // +1: 승인 템플릿 batch apply를 snapshot으로 라우팅 / +1: host 선택 교체를 snapshot으로 라우팅 / +1: 누름틀 제거 이관 시 removeFieldAt 이 양식모드(직접 유지)/일반모드(snapshot) 두 분기로 분리 / +1: Edit 오버레이 커밋이 셀 내부는 setFormValueInCell 로 분기(CheckBox 와 동일 조건 — 기존 flat 호출은 표 컨트롤 슬롯을 가리켜 실패) / +1: 셀 블록 글자 서식이 applyCharFormatInCell 을 executeOperation snapshot 안에서 호출(여러 셀에 걸친 글자 서식 커맨드 부재) / +1: 중첩 셀 블록 글자 서식도 applyCharFormatInCellByPath 를 같은 snapshot 안에서 호출 / +2: 머리말·꼬리말(applyParaFormatInHf)과 각주(applyParaFormatInFootnote) 문단 서식 배선 — 둘 다 snapshot 라우팅
   'src/engine/input-handler-connector.ts': 1,

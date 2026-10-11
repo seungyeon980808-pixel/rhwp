@@ -160,6 +160,7 @@ for (const type of ['keydown', 'beforeinput', 'input', 'paste', 'compositionstar
   if (exclusiveDocumentFrozen) { event.preventDefault(); event.stopImmediatePropagation(); }
 }, true);
 let canRequestDocumentEdit = false;
+let updateLiveFormatBoundary: ReturnType<typeof installLiveFormatBoundary> | undefined;
 let collaborationReadOnly = false;
 let extensionViewerSettings: ExtensionViewerSettings = {
   disableExternalWebFonts: false,
@@ -269,7 +270,7 @@ async function beginLiveCollaborationMode(): Promise<void> {
     collaborationReadOnly = false;
     disconnectAutosaveManager();
     dismissAutosaveRecoveryDialog();
-    installLiveFormatBoundary(document);
+    updateLiveFormatBoundary = installLiveFormatBoundary(document);
     installLiveStructureBoundary(document);
   }
   await collaborationLiveAdapter.begin();
@@ -1728,6 +1729,7 @@ installEmbedRuntime({
       canRequestDocumentEdit = mode.canRequest;
       exclusiveDocumentEdit = mode.exclusive;
       exclusiveDocumentFrozen = mode.frozen === true;
+      updateLiveFormatBoundary?.({ canRequest: mode.canRequest, frozen: mode.frozen });
       inputHandler?.setDocumentEditTableAddress(mode.exclusive ? mode.tableAddress : undefined);
       if (!mode.exclusive && !mode.frozen) dispatcher.cancelPendingDocumentOperation();
       wasm.restrictLiveTableStructure(!mode.exclusive);

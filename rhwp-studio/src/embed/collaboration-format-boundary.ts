@@ -10,20 +10,31 @@ export function isUnsupportedLiveFormat(command: string, live: boolean): boolean
   return live && (unsupportedCommands.has(command) || (command.startsWith('format:') && !supportedCommands.has(command)));
 }
 
-export function installLiveFormatBoundary(document: Document): void {
+export function installLiveFormatBoundary(document: Document): (mode: { canRequest: boolean; frozen?: boolean }) => void {
   const selectors = ['#style-name', '#font-name', '#font-lang', '#btn-charfx'];
   const selector = selectors.join(',');
   const controls = [...document.querySelectorAll(selector), ...[...document.querySelectorAll('[data-cmd]')]
     .filter((element) => isUnsupportedLiveFormat(element.getAttribute('data-cmd') ?? '', true))];
-  for (const element of controls) {
-    if (element instanceof HTMLButtonElement || element instanceof HTMLInputElement || element instanceof HTMLSelectElement) element.disabled = true;
-    element.setAttribute('aria-disabled', 'true');
-    element.setAttribute('title', unsupportedLiveFormatReason);
-  }
+  const originals = controls.map(element => ({ element,
+    disabled: 'disabled' in element ? (element as HTMLButtonElement).disabled : undefined,
+    title: element.getAttribute('title'), ariaDisabled: element.getAttribute('aria-disabled') }));
+  let blocked = true;
+  const update = (mode: { canRequest: boolean; frozen?: boolean }): void => {
+    blocked = !mode.canRequest || mode.frozen === true;
+    for (const { element, disabled, title, ariaDisabled } of originals) {
+      if (disabled !== undefined) (element as HTMLButtonElement).disabled = blocked || disabled;
+      for (const [name, value] of [['title', blocked ? unsupportedLiveFormatReason : title],
+        ['aria-disabled', blocked ? 'true' : ariaDisabled]] as const) {
+        if (value === null) element.removeAttribute(name); else element.setAttribute(name, value);
+      }
+    }
+  };
+  update({ canRequest: false });
   const block = (event: Event): void => {
-    if (event.target instanceof Element && event.target.closest(selector)) {
+    if (blocked && event.target instanceof Element && event.target.closest(selector)) {
       event.preventDefault(); event.stopImmediatePropagation();
     }
   };
-  for (const name of ['mousedown', 'click', 'change', 'input']) document.addEventListener(name, block, true);
+  for (const name of ['pointerdown', 'mousedown', 'click', 'change', 'input']) document.addEventListener(name, block, true);
+  return update;
 }

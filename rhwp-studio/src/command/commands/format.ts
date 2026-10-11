@@ -1,5 +1,6 @@
 import type { CommandDef } from '../types';
 import { applyNormalCharacterStyle, adjustFirstLineIndent } from '../format-shortcuts.ts';
+import { applyFontFamily } from '../font-family-command.ts';
 import { CharShapeDialog } from '@/ui/char-shape-dialog';
 import { ParaShapeDialog } from '@/ui/para-shape-dialog';
 import { NumberingDialog } from '@/ui/numbering-dialog';
@@ -10,6 +11,12 @@ import { EquationPropertiesDialog } from '@/ui/equation-props-dialog';
 import { TableCellPropsDialog } from '@/ui/table-cell-props-dialog';
 
 export const formatCommands: CommandDef[] = [
+  {
+    id: 'format:font-family',
+    label: '글꼴 적용',
+    canExecute: (ctx) => ctx.hasDocument,
+    execute: applyFontFamily,
+  },
   {
     id: 'format:bold',
     label: '굵게',

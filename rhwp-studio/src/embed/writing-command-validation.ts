@@ -7,7 +7,7 @@ export const writingCommandIds = new Set<string>([
   'format:apply-bullet', 'format:apply-style', 'format:bold',
   'format:bullet-shape', 'format:char-ratio-decrease', 'format:char-ratio-increase',
   'format:char-shape', 'format:char-spacing-decrease', 'format:char-spacing-increase',
-  'format:emboss', 'format:engrave', 'format:font-size-decrease',
+  'format:emboss', 'format:engrave', 'format:font-family', 'format:font-size-decrease',
   'format:font-size-increase', 'format:indent', 'format:italic',
   'format:level-decrease', 'format:level-increase', 'format:line-spacing',
   'format:line-spacing-decrease', 'format:line-spacing-increase', 'format:normal',
